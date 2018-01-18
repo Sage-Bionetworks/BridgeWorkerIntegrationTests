@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -27,6 +28,7 @@ import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.sqs.AmazonSQSClient;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
@@ -75,6 +77,11 @@ public class WorkerTest {
     private static final String CONFIG_FILE = "BridgeWorker-test.conf";
     private static final String DEFAULT_CONFIG_FILE = CONFIG_FILE;
     private static final String USER_CONFIG_FILE = System.getProperty("user.home") + "/" + CONFIG_FILE;
+
+    // DailyActivitySummary.activities generally gets no data, and our integ test apps don't have permissions for
+    // HeartRate.activities-heart-intraday.
+    private static final Set<String> EXCLUDED_FITBIT_TABLE_SET = ImmutableSet.of("DailyActivitySummary.activities",
+            "HeartRate.activities-heart-intraday");
 
     // services
     private static SqsHelper sqsHelper;
@@ -172,8 +179,8 @@ public class WorkerTest {
         // Take a snapshot of "now" so we don't get weird clock drift while the test is running.
         now = DateTime.now();
 
-        // Clock skew on our Jenkins machine can be up to 5 minutes. Because of this, set the upload's upload time to
-        // 10 min ago, and export in a window between 15 min ago and 5 min ago.
+        // Clock skew on our Jenkins machine can be up to 10 minutes. Because of this, set the upload's upload time to
+        // 20 min ago, and export in a window between 30 min ago and 10 min ago.
         DateTime uploadDateTime = now.minusMinutes(10);
 
         // Generate a test run ID
@@ -258,9 +265,8 @@ public class WorkerTest {
         Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", TEST_STUDY_ID);
         List<String> tableIdList = new ArrayList<>();
         for (Item oneTableItem : tableItemIter) {
-            // Exclude DailyActivitySummary.activities, as this table frequently gets no data.
             String tableName = oneTableItem.getString("tableId");
-            if (!"DailyActivitySummary.activities".equals(tableName)) {
+            if (!EXCLUDED_FITBIT_TABLE_SET.contains(tableName)) {
                 tableIdList.add(oneTableItem.getString("synapseTableId"));
             }
         }
@@ -310,16 +316,18 @@ public class WorkerTest {
     public void reporter() throws Exception {
         // Create request
         // Use signups report, since it's easier to create signups than uploads.
-        // Start and end times should be 5 min before/after "now", to account for clock skew.
+        // Start and end times should be 10 min before/after "now", to account for clock skew.
         // Even though the signups report is a "daily" report, we can specify arbitrary start and end times.
+        DateTime startDateTime = now.minusMinutes(10);
+        DateTime endDateTime = now.plusMinutes(10);
         String requestText = "{\n" +
                 "   \"service\":\"REPORTER\",\n" +
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_SIGNUPS\",\n" +
                 "       \"studyWhitelist\":[\"" + TEST_STUDY_ID + "\"],\n" +
-                "       \"startDateTime\":\"" + now.minusMinutes(5).toString() + "\",\n" +
-                "       \"endDateTime\":\"" + now.plusMinutes(5).toString() + "\"\n" +
+                "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
+                "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
@@ -328,7 +336,7 @@ public class WorkerTest {
         // Verify. Poll report until we get the result or we hit max iterations.
         StudyReportsApi reportsApi = developer.getClient(StudyReportsApi.class);
         String reportId = "reporter-test-" + integTestRunId + "-daily-signups-report";
-        LocalDate reportDate = now.toLocalDate();
+        LocalDate reportDate = startDateTime.toLocalDate();
         List<ReportData> reportDataList = null;
         for (int i = 0; i < POLL_MAX_ITERATIONS; i++) {
             TimeUnit.SECONDS.sleep(POLL_INTERVAL_SECONDS);
