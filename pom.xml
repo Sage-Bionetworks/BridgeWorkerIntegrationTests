@@ -51,7 +51,7 @@
         <dependency>
             <groupId>org.sagebionetworks</groupId>
             <artifactId>BridgeIntegTestUtils</artifactId>
-            <version>1.0.0</version>
+            <version>1.0.1</version>
         </dependency>
         <dependency>
             <groupId>org.sagebionetworks</groupId>
@@ -61,7 +61,7 @@
         <dependency>
             <groupId>org.sagebionetworks.bridge</groupId>
             <artifactId>rest-client</artifactId>
-            <version>0.13.30</version>
+            <version>0.15.14</version>
         </dependency>
         <dependency>
             <groupId>org.testng</groupId>
