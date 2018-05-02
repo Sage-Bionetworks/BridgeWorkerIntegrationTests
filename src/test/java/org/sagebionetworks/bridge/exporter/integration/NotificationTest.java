@@ -220,6 +220,24 @@ public class NotificationTest {
     }
 
     @Test
+    public void timeZoneOutOfRange() throws Exception {
+        // Create user and initialize with an offset that's definitely out of range (UTC).
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
+                signUp);
+
+        // Init user's activities using UTC
+        DateTime startOfToday = today.toDateTimeAtStartOfDay(DateTimeZone.UTC);
+        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(14))
+                .execute();
+        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday.plusDays(14),
+                startOfToday.plusDays(28)).execute();
+
+        // Run test
+        testNoNotification("timeZoneOutOfRange", null, user);
+    }
+
+    @Test
     public void notInBurst() throws Exception {
         // Call Notification Worker on a date between the bursts. Bursts lasts 9 days. Today + 9 days is the day after
         // the end of the first burst.
