@@ -5,9 +5,6 @@ import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,14 +16,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder;
 import com.amazonaws.services.dynamodbv2.document.AttributeUpdate;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
-import com.amazonaws.services.sqs.AmazonSQSClient;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -43,14 +36,11 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
-import org.sagebionetworks.bridge.config.Environment;
-import org.sagebionetworks.bridge.config.PropertiesConfig;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.HealthDataApi;
 import org.sagebionetworks.bridge.rest.api.StudyReportsApi;
 import org.sagebionetworks.bridge.rest.api.UploadSchemasApi;
 import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
-import org.sagebionetworks.bridge.rest.model.ClientInfo;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecord;
 import org.sagebionetworks.bridge.rest.model.HealthDataSubmission;
 import org.sagebionetworks.bridge.rest.model.ReportData;
@@ -61,6 +51,7 @@ import org.sagebionetworks.bridge.rest.model.UploadSchema;
 import org.sagebionetworks.bridge.rest.model.UploadSchemaType;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
+import org.sagebionetworks.bridge.util.IntegTestUtils;
 
 @SuppressWarnings("unchecked")
 public class WorkerTest {
@@ -72,11 +63,6 @@ public class WorkerTest {
     private static final String PHONE_INFO = "BridgeWorkerIntegTest";
     private static final int POLL_INTERVAL_SECONDS = 5;
     private static final int POLL_MAX_ITERATIONS = 6;
-    private static final String TEST_STUDY_ID = "api";
-
-    private static final String CONFIG_FILE = "BridgeWorker-test.conf";
-    private static final String DEFAULT_CONFIG_FILE = CONFIG_FILE;
-    private static final String USER_CONFIG_FILE = System.getProperty("user.home") + "/" + CONFIG_FILE;
 
     // DailyActivitySummary.activities generally gets no data, and our integ test apps don't have permissions for
     // HeartRate.activities-heart-intraday.
@@ -102,48 +88,22 @@ public class WorkerTest {
     // using @BeforeClass, which unfortunately prevents us from using Spring.
     @BeforeClass
     public static void beforeClass() throws Exception {
-        // Set TestUserHelper client info
-        ClientInfo clientInfo = TestUserHelper.getClientInfo();
-        clientInfo.setAppName("Worker Integ Tests");
-        clientInfo.setAppVersion(1);
-
-        // bridge config
-        //noinspection ConstantConditions
-        String defaultConfig = WorkerTest.class.getClassLoader().getResource(DEFAULT_CONFIG_FILE).getPath();
-        Path defaultConfigPath = Paths.get(defaultConfig);
-        Path localConfigPath = Paths.get(USER_CONFIG_FILE);
-
-        Config bridgeConfig;
-        if (Files.exists(localConfigPath)) {
-            bridgeConfig = new PropertiesConfig(defaultConfigPath, localConfigPath);
-        } else {
-            bridgeConfig = new PropertiesConfig(defaultConfigPath);
-        }
-
         // config vars
-        Environment env = bridgeConfig.getEnvironment();
+        Config bridgeConfig = TestUtils.loadConfig();
         workerSqsUrl = bridgeConfig.get("worker.request.sqs.queue.url");
-        String synapseUser = bridgeConfig.get("synapse.user");
-        String synapseApiKey = bridgeConfig.get("synapse.api.key");
 
         // AWS services
-        BasicAWSCredentials awsCredentials = new BasicAWSCredentials(bridgeConfig.get("aws.key"),
-                bridgeConfig.get("aws.secret.key"));
-        AWSCredentialsProvider awsCredentialsProvider = new AWSStaticCredentialsProvider(awsCredentials);
-
-        sqsHelper = new SqsHelper();
-        //noinspection deprecation
-        sqsHelper.setSqsClient(new AmazonSQSClient(awsCredentials));
+        AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(bridgeConfig);
+        sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
 
         // DDB tables
-        DynamoDB ddbClient = new DynamoDB(AmazonDynamoDBClientBuilder.standard()
-                .withCredentials(awsCredentialsProvider).build());
-        String ddbBridgePrefix = env.name().toLowerCase() + '-' + bridgeConfig.getUser() + '-';
-
-        ddbFitBitTables = ddbClient.getTable(ddbBridgePrefix + "FitBitTables");
-        Table ddbRecordTable = ddbClient.getTable(ddbBridgePrefix + "HealthDataRecord3");
+        DynamoDB ddbClient = TestUtils.getDdbClient(awsCredentialsProvider);
+        ddbFitBitTables = TestUtils.getDdbTable(bridgeConfig, ddbClient, "FitBitTables");
+        Table ddbRecordTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "HealthDataRecord3");
 
         // Synapse clients
+        String synapseUser = bridgeConfig.get("synapse.user");
+        String synapseApiKey = bridgeConfig.get("synapse.api.key");
         synapseClient = new SynapseClientImpl();
         synapseClient.setUsername(synapseUser);
         synapseClient.setApiKey(synapseApiKey);
@@ -152,9 +112,8 @@ public class WorkerTest {
         executorService = Executors.newCachedThreadPool();
 
         // Bridge clients
-        developer = TestUserHelper.createAndSignInUser(WorkerTest.class, TEST_STUDY_ID, false,
-                Role.DEVELOPER);
-        user = TestUserHelper.createAndSignInUser(WorkerTest.class, TEST_STUDY_ID, true);
+        developer = TestUserHelper.createAndSignInUser(WorkerTest.class, false, Role.DEVELOPER);
+        user = TestUserHelper.createAndSignInUser(WorkerTest.class, true);
 
         // ensure schemas exist, so we have something to upload against
         UploadSchemasApi uploadSchemasApi = developer.getClient(UploadSchemasApi.class);
@@ -238,7 +197,7 @@ public class WorkerTest {
                 "   \"service\":\"FitBitWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + todaysDate.toString() + "\",\n" +
-                "       \"studyWhitelist\":[\"" + TEST_STUDY_ID + "\"]\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"]\n" +
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
@@ -262,7 +221,7 @@ public class WorkerTest {
     private static Map<String, Integer> countRowsForTables(LocalDate createdDate)
             throws Exception {
         // Query dynamo for all FitBit tables in this study.
-        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", TEST_STUDY_ID);
+        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", IntegTestUtils.STUDY_ID);
         List<String> tableIdList = new ArrayList<>();
         for (Item oneTableItem : tableItemIter) {
             String tableName = oneTableItem.getString("tableId");
@@ -325,7 +284,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_SIGNUPS\",\n" +
-                "       \"studyWhitelist\":[\"" + TEST_STUDY_ID + "\"],\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
