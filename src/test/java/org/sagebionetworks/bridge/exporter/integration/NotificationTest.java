@@ -11,7 +11,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
@@ -20,6 +19,7 @@ import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDate;
@@ -56,7 +56,13 @@ public class NotificationTest {
     private static final String EXCLUDED_DATA_GROUP = "integ-test-excluded";
     private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
     private static final int MAX_POLL_ITERATIONS = 6;
+    private static final String MESSAGE_CUMULATIVE = "Test notification (cumulative activities)";
+    private static final String MESSAGE_EARLY_1 = "Test notification (early group 1)";
+    private static final String MESSAGE_EARLY_2 = "Test notification (early group 2)";
+    private static final String MESSAGE_LATE = "Test notification (late in burst)";
     private static final long POLL_DELAY_MILLIS = 5000;
+    private static final String REQUIRED_DATA_GROUP_1 = "sdk-int-1";
+    private static final String REQUIRED_DATA_GROUP_2 = "sdk-int-2";
 
     // Use this unique ID for event IDs, schedule labels, task IDs, etc.
     private static final String TEST_ID = "notification-integ-test";
@@ -88,16 +94,30 @@ public class NotificationTest {
         ddbWorkerLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "WorkerLog");
 
         // Ensure notification config
+        Map<String, String> missedCumulativeMessageMap = ImmutableMap.of(
+                REQUIRED_DATA_GROUP_1, MESSAGE_CUMULATIVE,
+                REQUIRED_DATA_GROUP_2, MESSAGE_CUMULATIVE);
+        Map<String, String> missedEarlyMessageMap = ImmutableMap.of(
+                REQUIRED_DATA_GROUP_1, MESSAGE_EARLY_1,
+                REQUIRED_DATA_GROUP_2, MESSAGE_EARLY_2);
+        Map<String, String> missedLateMessageMap = ImmutableMap.of(
+                REQUIRED_DATA_GROUP_1, MESSAGE_LATE,
+                REQUIRED_DATA_GROUP_2, MESSAGE_LATE);
+
         Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
                 .withInt("burstDurationDays", 9)
                 .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
                 .withString("burstTaskId", TEST_ID)
+                .withInt("earlyLateCutoffDays", 5)
                 .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
+                .withMap("missedCumulativeActivitiesMessagesByDataGroup", missedCumulativeMessageMap)
+                .withMap("missedEarlyActivitiesMessagesByDataGroup", missedEarlyMessageMap)
+                .withMap("missedLaterActivitiesMessagesByDataGroup", missedLateMessageMap)
                 .withInt("notificationBlackoutDaysFromStart", 3)
                 .withInt("notificationBlackoutDaysFromEnd", 3)
-                .withString("notificationMessage", "Test notification for study burst in API study")
                 .withInt("numMissedConsecutiveDaysToNotify", 2)
                 .withInt("numMissedDaysToNotify", 3)
+                .withStringSet("requiredDataGroupsOneOfSet", REQUIRED_DATA_GROUP_1, REQUIRED_DATA_GROUP_2)
                 .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
         ddbNotificationConfigTable.putItem(configItem);
 
@@ -112,18 +132,30 @@ public class NotificationTest {
         // Ensure study has all the pre-reqs for our test.
         Study study = developer.getClient(StudiesApi.class).getUsersStudy().execute().body();
         boolean shouldUpdateStudy = false;
+
         if (!study.getAutomaticCustomEvents().containsKey(TEST_ID)) {
             study.putAutomaticCustomEventsItem(TEST_ID, "P2W");
             shouldUpdateStudy = true;
         }
+
         if (!study.getDataGroups().contains(EXCLUDED_DATA_GROUP)) {
             study.addDataGroupsItem(EXCLUDED_DATA_GROUP);
             shouldUpdateStudy = true;
         }
+        if (!study.getDataGroups().contains(REQUIRED_DATA_GROUP_1)) {
+            study.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
+            shouldUpdateStudy = true;
+        }
+        if (!study.getDataGroups().contains(REQUIRED_DATA_GROUP_2)) {
+            study.addDataGroupsItem(REQUIRED_DATA_GROUP_2);
+            shouldUpdateStudy = true;
+        }
+
         if (!study.getTaskIdentifiers().contains(TEST_ID)) {
             study.addTaskIdentifiersItem(TEST_ID);
             shouldUpdateStudy = true;
         }
+
         if (shouldUpdateStudy) {
             developer.getClient(StudiesApi.class).updateUsersStudy(study).execute();
         }
@@ -177,7 +209,10 @@ public class NotificationTest {
     @Test
     public void phoneNotVerified() throws Exception {
         // Make an email user, and then add a phone number. (Phone is unverified by default.)
-        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true);
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID)
+                .email(IntegTestUtils.makeEmail(NotificationTest.class)).password("password1");
+        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
+        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
 
         IdentifierUpdate identifierUpdate = new IdentifierUpdate().phoneUpdate(IntegTestUtils.PHONE)
@@ -192,6 +227,7 @@ public class NotificationTest {
     public void notConsented() throws Exception {
         // Make unconsented phone user. Note that unconsented users can't get activities.
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, false, signUp);
 
         // Run test
@@ -201,19 +237,31 @@ public class NotificationTest {
     @Test
     public void noActivities() throws Exception {
         // Create a user but don't init their activities.
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        user = createUser();
 
         // Run test
         testNoNotification("noActivities", null, user);
     }
 
     @Test
-    public void excludedByDataGroup() throws Exception {
-        // Create user with data group
+    public void missingRequiredDataGroup() throws Exception {
+        // Create user that's missing the required data group
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        initUser(user);
+
+        // Run test
+        testNoNotification("missingRequiredDataGroup", null, user);
+    }
+
+    @Test
+    public void excludedByDataGroup() throws Exception {
+        // Create user with an excluded data group
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         signUp.addDataGroupsItem(EXCLUDED_DATA_GROUP);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        initUser(user);
 
         // Run test
         testNoNotification("excludeByDataGroup", null, user);
@@ -222,9 +270,7 @@ public class NotificationTest {
     @Test
     public void timeZoneOutOfRange() throws Exception {
         // Create user and initialize with an offset that's definitely out of range (UTC).
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
-                signUp);
+        TestUserHelper.TestUser user = createUser();
 
         // Init user's activities using UTC
         DateTime startOfToday = today.toDateTimeAtStartOfDay(DateTimeZone.UTC);
@@ -296,8 +342,10 @@ public class NotificationTest {
         completeActivitiesForDateIndices(user, 0);
 
         // Run test
-        List<Long> notificationTimeList = getNotificationsForUser("twoConsecutiveDays", null, user);
-        assertEquals(notificationTimeList.size(), 1);
+        List<Item> notificationList = getNotificationsForUser("twoConsecutiveDays", null, user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getString("notificationType"), "EARLY");
+        assertEquals(notificationList.get(0).getString("message"), MESSAGE_EARLY_1);
     }
 
     @Test
@@ -307,8 +355,44 @@ public class NotificationTest {
         completeActivitiesForDateIndices(user, 1, 3);
 
         // Run test. Test on day 4.
-        List<Long> notificationTimeList = getNotificationsForUser("threeTotalDays", today.plusDays(4), user);
-        assertEquals(notificationTimeList.size(), 1);
+        List<Item> notificationList = getNotificationsForUser("threeTotalDays", today.plusDays(4), user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getString("notificationType"), "CUMULATIVE");
+        assertEquals(notificationList.get(0).getString("message"), MESSAGE_CUMULATIVE);
+    }
+
+    @Test
+    public void missedLateActivities() throws Exception {
+        // Did activities on day 0-3, but missed days 4 and 5. Run test on day 5.
+        // Did first day, but missed the second and third days.
+        user = createAndInitUser();
+        completeActivitiesForDateIndices(user, 0, 1, 2, 3);
+
+        // Run test
+        List<Item> notificationList = getNotificationsForUser("missedLateActivities", today.plusDays(5),
+                user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getString("notificationType"), "LATE");
+        assertEquals(notificationList.get(0).getString("message"), MESSAGE_LATE);
+    }
+
+    @Test
+    public void differentMessageByDataGroup() throws Exception {
+        // Create user with data group 2.
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_2);
+        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        initUser(user);
+
+        // Did first day, but missed the second and third days.
+        completeActivitiesForDateIndices(user, 0);
+
+        // Run test
+        List<Item> notificationList = getNotificationsForUser("differentMessageByDataGroup", null,
+                user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getString("notificationType"), "EARLY");
+        assertEquals(notificationList.get(0).getString("message"), MESSAGE_EARLY_2);
     }
 
     @Test
@@ -318,24 +402,25 @@ public class NotificationTest {
 
         long fakeNotificationTimeMillis = today.toDateTimeAtStartOfDay().getMillis();
         Item item = new Item().withPrimaryKey("userId", user.getUserId(),
-                "notificationTime", fakeNotificationTimeMillis);
+                "notificationTime", fakeNotificationTimeMillis)
+                .withString("message", "dummy message")
+                .withString("notificationType", "EARLY");
         ddbNotificationLogTable.putItem(item);
 
-        // Run test
-        List<Long> notificationTimeList = getNotificationsForUser("alreadyNotified", null, user);
-        assertEquals(notificationTimeList.size(), 1);
-        assertEquals(notificationTimeList.get(0).longValue(), fakeNotificationTimeMillis);
+        // Run test. We only care that the timestamp matches.
+        List<Item> notificationList = getNotificationsForUser("alreadyNotified", null, user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getLong("notificationTime"), fakeNotificationTimeMillis);
     }
 
-    private static List<Long> getNotificationsForUser(String testName, LocalDate date, TestUserHelper.TestUser user)
+    private static List<Item> getNotificationsForUser(String testName, LocalDate date, TestUserHelper.TestUser user)
             throws Exception {
         // Execute
         executeNotificationWorker(testName, date);
 
         // Only one entry in the notification log, and it's the fake timestamp.
         Iterable<Item> itemIter = ddbNotificationLogTable.query("userId", user.getUserId());
-        return ImmutableList.copyOf(itemIter).stream().map(item -> item.getLong("notificationTime"))
-                .collect(Collectors.toList());
+        return ImmutableList.copyOf(itemIter);
     }
 
     private static void executeNotificationWorker(String testName, LocalDate date) throws Exception {
@@ -392,10 +477,16 @@ public class NotificationTest {
     }
 
     private static TestUserHelper.TestUser createAndInitUser() throws Exception {
+        TestUserHelper.TestUser user = createUser();
+        initUser(user);
+        return user;
+    }
+
+    private static TestUserHelper.TestUser createUser() throws Exception {
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
                 signUp);
-        initUser(user);
         return user;
     }
 
