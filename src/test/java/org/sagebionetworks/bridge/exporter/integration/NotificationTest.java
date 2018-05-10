@@ -60,6 +60,7 @@ public class NotificationTest {
     private static final String MESSAGE_EARLY_1 = "Test notification (early group 1)";
     private static final String MESSAGE_EARLY_2 = "Test notification (early group 2)";
     private static final String MESSAGE_LATE = "Test notification (late in burst)";
+    private static final String MESSAGE_PRE_BURST = "Test notification (pre-burst)";
     private static final long POLL_DELAY_MILLIS = 5000;
     private static final String REQUIRED_DATA_GROUP_1 = "sdk-int-1";
     private static final String REQUIRED_DATA_GROUP_2 = "sdk-int-2";
@@ -103,6 +104,9 @@ public class NotificationTest {
         Map<String, String> missedLateMessageMap = ImmutableMap.of(
                 REQUIRED_DATA_GROUP_1, MESSAGE_LATE,
                 REQUIRED_DATA_GROUP_2, MESSAGE_LATE);
+        Map<String, String> preburstMessageMap = ImmutableMap.of(
+                REQUIRED_DATA_GROUP_1, MESSAGE_PRE_BURST,
+                REQUIRED_DATA_GROUP_2, MESSAGE_PRE_BURST);
 
         Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
                 .withInt("burstDurationDays", 9)
@@ -117,6 +121,7 @@ public class NotificationTest {
                 .withInt("notificationBlackoutDaysFromEnd", 3)
                 .withInt("numMissedConsecutiveDaysToNotify", 2)
                 .withInt("numMissedDaysToNotify", 3)
+                .withMap("preburstMessagesByDataGroup", preburstMessageMap)
                 .withStringSet("requiredDataGroupsOneOfSet", REQUIRED_DATA_GROUP_1, REQUIRED_DATA_GROUP_2)
                 .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
         ddbNotificationConfigTable.putItem(configItem);
@@ -336,16 +341,32 @@ public class NotificationTest {
     }
 
     @Test
-    public void twoConsecutiveDays() throws Exception {
-        // Did first day, but missed the second and third days.
+    public void preburstAndEarlyNotifications() throws Exception {
+        // Test preburst and early notifications in the same test, specifically to make sure that the preburst
+        // notification doesn't prevent the regular notification from happening.
         user = createAndInitUser();
+
+        // Technically, the notification worker will never process a user _before_ they're enrolled. But for the
+        // purposes of this test, this represents sending the pre-burst notification a day before the start of burst.
+        List<Item> notificationList = getNotificationsForUser("preburst", today.minusDays(1), user);
+        assertEquals(notificationList.size(), 1);
+
+        Item preburstNotification = notificationList.get(0);
+        assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
+        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST);
+
+        // Did first day, but missed the second and third days.
         completeActivitiesForDateIndices(user, 0);
 
-        // Run test
-        List<Item> notificationList = getNotificationsForUser("twoConsecutiveDays", null, user);
-        assertEquals(notificationList.size(), 1);
-        assertEquals(notificationList.get(0).getString("notificationType"), "EARLY");
-        assertEquals(notificationList.get(0).getString("message"), MESSAGE_EARLY_1);
+        // Run test for normal notification. We have 2 notifications now, and the first one should be the same as the
+        // one we saw earlier.
+        notificationList = getNotificationsForUser("twoConsecutiveDays", null, user);
+        assertEquals(notificationList.size(), 2);
+
+        assertEquals(notificationList.get(0), preburstNotification);
+
+        assertEquals(notificationList.get(1).getString("notificationType"), "EARLY");
+        assertEquals(notificationList.get(1).getString("message"), MESSAGE_EARLY_1);
     }
 
     @Test
@@ -418,7 +439,7 @@ public class NotificationTest {
         // Execute
         executeNotificationWorker(testName, date);
 
-        // Only one entry in the notification log, and it's the fake timestamp.
+        // Get notification log for user.
         Iterable<Item> itemIter = ddbNotificationLogTable.query("userId", user.getUserId());
         return ImmutableList.copyOf(itemIter);
     }
