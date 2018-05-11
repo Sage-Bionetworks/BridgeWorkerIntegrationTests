@@ -118,7 +118,8 @@ public class NotificationTest {
                 .withMap("missedEarlyActivitiesMessagesByDataGroup", missedEarlyMessageMap)
                 .withMap("missedLaterActivitiesMessagesByDataGroup", missedLateMessageMap)
                 .withInt("notificationBlackoutDaysFromStart", 3)
-                .withInt("notificationBlackoutDaysFromEnd", 3)
+                .withInt("notificationBlackoutDaysFromEnd", 1)
+                .withInt("numActivitiesToCompleteBurst", 6)
                 .withInt("numMissedConsecutiveDaysToNotify", 2)
                 .withInt("numMissedDaysToNotify", 3)
                 .withMap("preburstMessagesByDataGroup", preburstMessageMap)
@@ -305,9 +306,9 @@ public class NotificationTest {
 
     @Test
     public void blackoutTail() throws Exception {
-        // On today + 6, the user will have missed 7 days in a row, but we just entered the tail blackout period.
+        // On today + 8, the user will have missed 9 days in a row, but we just entered the tail blackout period.
         user = createAndInitUser();
-        testNoNotification("blackoutTail", today.plusDays(6), user);
+        testNoNotification("blackoutTail", today.plusDays(8), user);
     }
 
     @Test
@@ -328,6 +329,17 @@ public class NotificationTest {
 
         // Run test
         testNoNotification("didTodaysActivities", null, user);
+    }
+
+    @Test
+    public void dontNotifyIfCompletedBurst() throws Exception {
+        // Participant did days 0-5, then missed day 6 and 7. Burst is only 6 activities, so don't notify.
+        // Create user and do activities on first, second, and third days.
+        user = createAndInitUser();
+        completeActivitiesForDateIndices(user, 0, 1, 2, 3, 4, 5);
+
+        // Run test
+        testNoNotification("dontNotifyIfCompletedBurst", today.plusDays(7), user);
     }
 
     private static void testNoNotification(String testName, LocalDate date, TestUserHelper.TestUser user)
