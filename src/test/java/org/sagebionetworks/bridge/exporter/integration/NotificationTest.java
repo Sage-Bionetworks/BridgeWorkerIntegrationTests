@@ -276,7 +276,7 @@ public class NotificationTest {
     @Test
     public void timeZoneOutOfRange() throws Exception {
         // Create user and initialize with an offset that's definitely out of range (UTC).
-        TestUserHelper.TestUser user = createUser();
+        user = createUser();
 
         // Init user's activities using UTC
         DateTime startOfToday = today.toDateTimeAtStartOfDay(DateTimeZone.UTC);
