@@ -338,8 +338,8 @@ public class NotificationTest {
         user = createAndInitUser();
 
         // Technically, the notification worker will never process a user _before_ they're enrolled. But for the
-        // purposes of this test, this represents sending the pre-burst notification a day before the start of burst.
-        List<Item> notificationList = getNotificationsForUser("preburst", today.minusDays(1), user);
+        // purposes of this test, this represents sending the pre-burst notification the day of the start of burst.
+        List<Item> notificationList = getNotificationsForUser("preburst", today, user);
         assertEquals(notificationList.size(), 1);
 
         Item preburstNotification = notificationList.get(0);
@@ -369,7 +369,7 @@ public class NotificationTest {
         initUser(user);
 
         // Execute preburst test.
-        List<Item> notificationList = getNotificationsForUser("preburstByDataGroups", today.minusDays(1), user);
+        List<Item> notificationList = getNotificationsForUser("preburstByDataGroups", today, user);
         assertEquals(notificationList.size(), 1);
 
         Item preburstNotification = notificationList.get(0);
