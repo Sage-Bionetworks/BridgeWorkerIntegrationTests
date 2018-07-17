@@ -57,13 +57,13 @@ public class NotificationTest {
     private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
     private static final int MAX_POLL_ITERATIONS = 6;
     private static final String MESSAGE_CUMULATIVE = "Test notification (cumulative activities)";
-    private static final String MESSAGE_EARLY_1 = "Test notification (early group 1)";
-    private static final String MESSAGE_EARLY_2 = "Test notification (early group 2)";
+    private static final String MESSAGE_EARLY = "Test notification (early)";
     private static final String MESSAGE_LATE = "Test notification (late in burst)";
-    private static final String MESSAGE_PRE_BURST = "Test notification (pre-burst)";
+    private static final String MESSAGE_PRE_BURST_1 = "Test notification (pre-burst group 1)";
+    private static final String MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2)";
     private static final long POLL_DELAY_MILLIS = 5000;
-    private static final String REQUIRED_DATA_GROUP_1 = "sdk-int-1";
-    private static final String REQUIRED_DATA_GROUP_2 = "sdk-int-2";
+    private static final String PREBURST_GROUP_1 = "sdk-int-1";
+    private static final String PREBURST_GROUP_2 = "sdk-int-2";
 
     // Use this unique ID for event IDs, schedule labels, task IDs, etc.
     private static final String TEST_ID = "notification-integ-test";
@@ -95,18 +95,12 @@ public class NotificationTest {
         ddbWorkerLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "WorkerLog");
 
         // Ensure notification config
-        Map<String, String> missedCumulativeMessageMap = ImmutableMap.of(
-                REQUIRED_DATA_GROUP_1, MESSAGE_CUMULATIVE,
-                REQUIRED_DATA_GROUP_2, MESSAGE_CUMULATIVE);
-        Map<String, String> missedEarlyMessageMap = ImmutableMap.of(
-                REQUIRED_DATA_GROUP_1, MESSAGE_EARLY_1,
-                REQUIRED_DATA_GROUP_2, MESSAGE_EARLY_2);
-        Map<String, String> missedLateMessageMap = ImmutableMap.of(
-                REQUIRED_DATA_GROUP_1, MESSAGE_LATE,
-                REQUIRED_DATA_GROUP_2, MESSAGE_LATE);
-        Map<String, String> preburstMessageMap = ImmutableMap.of(
-                REQUIRED_DATA_GROUP_1, MESSAGE_PRE_BURST,
-                REQUIRED_DATA_GROUP_2, MESSAGE_PRE_BURST);
+        List<String> missedCumulativeMessageList = ImmutableList.of(MESSAGE_CUMULATIVE);
+        List<String> missedEarlyMessageList = ImmutableList.of(MESSAGE_EARLY);
+        List<String> missedLateMessageList = ImmutableList.of(MESSAGE_LATE);
+        Map<String, List<String>> preburstMessageMap = ImmutableMap.of(
+                PREBURST_GROUP_1, ImmutableList.of(MESSAGE_PRE_BURST_1),
+                PREBURST_GROUP_2, ImmutableList.of(MESSAGE_PRE_BURST_2));
 
         Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
                 .withInt("burstDurationDays", 9)
@@ -114,16 +108,15 @@ public class NotificationTest {
                 .withString("burstTaskId", TEST_ID)
                 .withInt("earlyLateCutoffDays", 5)
                 .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
-                .withMap("missedCumulativeActivitiesMessagesByDataGroup", missedCumulativeMessageMap)
-                .withMap("missedEarlyActivitiesMessagesByDataGroup", missedEarlyMessageMap)
-                .withMap("missedLaterActivitiesMessagesByDataGroup", missedLateMessageMap)
+                .withList("missedCumulativeActivitiesMessagesList", missedCumulativeMessageList)
+                .withList("missedEarlyActivitiesMessagesList", missedEarlyMessageList)
+                .withList("missedLaterActivitiesMessagesList", missedLateMessageList)
                 .withInt("notificationBlackoutDaysFromStart", 3)
                 .withInt("notificationBlackoutDaysFromEnd", 1)
                 .withInt("numActivitiesToCompleteBurst", 6)
                 .withInt("numMissedConsecutiveDaysToNotify", 2)
                 .withInt("numMissedDaysToNotify", 3)
                 .withMap("preburstMessagesByDataGroup", preburstMessageMap)
-                .withStringSet("requiredDataGroupsOneOfSet", REQUIRED_DATA_GROUP_1, REQUIRED_DATA_GROUP_2)
                 .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
         ddbNotificationConfigTable.putItem(configItem);
 
@@ -148,12 +141,12 @@ public class NotificationTest {
             study.addDataGroupsItem(EXCLUDED_DATA_GROUP);
             shouldUpdateStudy = true;
         }
-        if (!study.getDataGroups().contains(REQUIRED_DATA_GROUP_1)) {
-            study.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
+        if (!study.getDataGroups().contains(PREBURST_GROUP_1)) {
+            study.addDataGroupsItem(PREBURST_GROUP_1);
             shouldUpdateStudy = true;
         }
-        if (!study.getDataGroups().contains(REQUIRED_DATA_GROUP_2)) {
-            study.addDataGroupsItem(REQUIRED_DATA_GROUP_2);
+        if (!study.getDataGroups().contains(PREBURST_GROUP_2)) {
+            study.addDataGroupsItem(PREBURST_GROUP_2);
             shouldUpdateStudy = true;
         }
 
@@ -217,7 +210,6 @@ public class NotificationTest {
         // Make an email user, and then add a phone number. (Phone is unverified by default.)
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID)
                 .email(IntegTestUtils.makeEmail(NotificationTest.class)).password("password1");
-        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
 
@@ -233,7 +225,6 @@ public class NotificationTest {
     public void notConsented() throws Exception {
         // Make unconsented phone user. Note that unconsented users can't get activities.
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, false, signUp);
 
         // Run test
@@ -250,21 +241,9 @@ public class NotificationTest {
     }
 
     @Test
-    public void missingRequiredDataGroup() throws Exception {
-        // Create user that's missing the required data group
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
-        initUser(user);
-
-        // Run test
-        testNoNotification("missingRequiredDataGroup", null, user);
-    }
-
-    @Test
     public void excludedByDataGroup() throws Exception {
         // Create user with an excluded data group
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
         signUp.addDataGroupsItem(EXCLUDED_DATA_GROUP);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
@@ -365,7 +344,7 @@ public class NotificationTest {
 
         Item preburstNotification = notificationList.get(0);
         assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
-        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST);
+        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST_1);
 
         // Did first day, but missed the second and third days.
         completeActivitiesForDateIndices(user, 0);
@@ -378,7 +357,24 @@ public class NotificationTest {
         assertEquals(notificationList.get(0), preburstNotification);
 
         assertEquals(notificationList.get(1).getString("notificationType"), "EARLY");
-        assertEquals(notificationList.get(1).getString("message"), MESSAGE_EARLY_1);
+        assertEquals(notificationList.get(1).getString("message"), MESSAGE_EARLY);
+    }
+
+    @Test
+    public void differentPreburstMessageByDataGroup() throws Exception {
+        // Create user with preburst group 2.
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        signUp.addDataGroupsItem(PREBURST_GROUP_2);
+        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        initUser(user);
+
+        // Execute preburst test.
+        List<Item> notificationList = getNotificationsForUser("preburstByDataGroups", today.minusDays(1), user);
+        assertEquals(notificationList.size(), 1);
+
+        Item preburstNotification = notificationList.get(0);
+        assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
+        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST_2);
     }
 
     @Test
@@ -407,25 +403,6 @@ public class NotificationTest {
         assertEquals(notificationList.size(), 1);
         assertEquals(notificationList.get(0).getString("notificationType"), "LATE");
         assertEquals(notificationList.get(0).getString("message"), MESSAGE_LATE);
-    }
-
-    @Test
-    public void differentMessageByDataGroup() throws Exception {
-        // Create user with data group 2.
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_2);
-        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
-        initUser(user);
-
-        // Did first day, but missed the second and third days.
-        completeActivitiesForDateIndices(user, 0);
-
-        // Run test
-        List<Item> notificationList = getNotificationsForUser("differentMessageByDataGroup", null,
-                user);
-        assertEquals(notificationList.size(), 1);
-        assertEquals(notificationList.get(0).getString("notificationType"), "EARLY");
-        assertEquals(notificationList.get(0).getString("message"), MESSAGE_EARLY_2);
     }
 
     @Test
@@ -517,7 +494,7 @@ public class NotificationTest {
 
     private static TestUserHelper.TestUser createUser() throws Exception {
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
-        signUp.addDataGroupsItem(REQUIRED_DATA_GROUP_1);
+        signUp.addDataGroupsItem(PREBURST_GROUP_1);
         TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
                 signUp);
         return user;
