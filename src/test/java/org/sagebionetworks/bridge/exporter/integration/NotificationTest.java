@@ -31,11 +31,15 @@ import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
+import org.sagebionetworks.bridge.rest.RestUtils;
 import org.sagebionetworks.bridge.rest.api.ActivitiesApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesApi;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
+import org.sagebionetworks.bridge.rest.api.SurveysApi;
 import org.sagebionetworks.bridge.rest.model.Activity;
+import org.sagebionetworks.bridge.rest.model.DataType;
+import org.sagebionetworks.bridge.rest.model.GuidCreatedOnVersionHolder;
 import org.sagebionetworks.bridge.rest.model.IdentifierUpdate;
 import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Schedule;
@@ -45,28 +49,53 @@ import org.sagebionetworks.bridge.rest.model.ScheduleType;
 import org.sagebionetworks.bridge.rest.model.ScheduledActivity;
 import org.sagebionetworks.bridge.rest.model.SignUp;
 import org.sagebionetworks.bridge.rest.model.SimpleScheduleStrategy;
+import org.sagebionetworks.bridge.rest.model.StringConstraints;
 import org.sagebionetworks.bridge.rest.model.Study;
+import org.sagebionetworks.bridge.rest.model.Survey;
+import org.sagebionetworks.bridge.rest.model.SurveyQuestion;
+import org.sagebionetworks.bridge.rest.model.SurveyReference;
 import org.sagebionetworks.bridge.rest.model.TaskReference;
+import org.sagebionetworks.bridge.rest.model.UIHint;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
 @SuppressWarnings("ConstantConditions")
 public class NotificationTest {
+    private static final String APP_URL = "http://example.com/app-url";
     private static final String EXCLUDED_DATA_GROUP = "integ-test-excluded";
     private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
     private static final int MAX_POLL_ITERATIONS = 6;
-    private static final String MESSAGE_CUMULATIVE = "Test notification (cumulative activities)";
-    private static final String MESSAGE_EARLY = "Test notification (early)";
-    private static final String MESSAGE_LATE = "Test notification (late in burst)";
-    private static final String MESSAGE_PRE_BURST_1 = "Test notification (pre-burst group 1)";
-    private static final String MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2)";
     private static final long POLL_DELAY_MILLIS = 5000;
     private static final String PREBURST_GROUP_1 = "sdk-int-1";
     private static final String PREBURST_GROUP_2 = "sdk-int-2";
+    private static final String STUDY_COMMITMENT_SURVEY_QUESTION = "benefits";
+    private static final String STUDY_COMMITMENT_DUMMY_ANSWER = "This is my study commitment";
+
+    // Message strings.
+    private static final String MESSAGE_CUMULATIVE = "Test notification (cumulative activities) ${studyCommitment} ${url}";
+    private static final String MESSAGE_EARLY = "Test notification (early) ${studyCommitment} ${url}";
+    private static final String MESSAGE_LATE = "Test notification (late in burst) ${studyCommitment} ${url}";
+    private static final String MESSAGE_PRE_BURST_1 = "Test notification (pre-burst group 1) ${studyCommitment} ${url}";
+    private static final String MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2) ${studyCommitment} ${url}";
+
+    // Resolved SMS Messages.
+    private static final String RESOLVED_MESSAGE_CUMULATIVE = "Test notification (cumulative activities) " +
+            STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
+    private static final String RESOLVED_MESSAGE_EARLY = "Test notification (early) " +
+            STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
+    private static final String RESOLVED_MESSAGE_LATE = "Test notification (late in burst) " +
+            STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
+    private static final String RESOLVED_MESSAGE_PRE_BURST_1 = "Test notification (pre-burst group 1) " +
+            STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
+    private static final String RESOLVED_MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2) " +
+            STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
 
     // Use this unique ID for event IDs, schedule labels, task IDs, etc.
     private static final String TEST_ID = "notification-integ-test";
+
+    // And again for the engagement survey and schedule.
+    private static final String TEST_ENGAGEMENT_SURVEY = "notification-integ-engagement-survey";
 
     private static LocalDate defaultTestDate;
     private static LocalDate today;
@@ -83,47 +112,6 @@ public class NotificationTest {
     // using @BeforeClass, which unfortunately prevents us from using Spring.
     @BeforeClass
     public static void beforeClass() throws Exception {
-        // AWS
-        Config bridgeConfig = TestUtils.loadConfig();
-        AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(bridgeConfig);
-
-        // DDB tables
-        DynamoDB ddbClient = TestUtils.getDdbClient(awsCredentialsProvider);
-        Table ddbNotificationConfigTable = TestUtils.getDdbTable(bridgeConfig, ddbClient,
-                "NotificationConfig");
-        ddbNotificationLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "NotificationLog");
-        ddbWorkerLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "WorkerLog");
-
-        // Ensure notification config
-        List<String> missedCumulativeMessageList = ImmutableList.of(MESSAGE_CUMULATIVE);
-        List<String> missedEarlyMessageList = ImmutableList.of(MESSAGE_EARLY);
-        List<String> missedLateMessageList = ImmutableList.of(MESSAGE_LATE);
-        Map<String, List<String>> preburstMessageMap = ImmutableMap.of(
-                PREBURST_GROUP_1, ImmutableList.of(MESSAGE_PRE_BURST_1),
-                PREBURST_GROUP_2, ImmutableList.of(MESSAGE_PRE_BURST_2));
-
-        Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
-                .withInt("burstDurationDays", 9)
-                .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
-                .withString("burstTaskId", TEST_ID)
-                .withInt("earlyLateCutoffDays", 5)
-                .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
-                .withList("missedCumulativeActivitiesMessagesList", missedCumulativeMessageList)
-                .withList("missedEarlyActivitiesMessagesList", missedEarlyMessageList)
-                .withList("missedLaterActivitiesMessagesList", missedLateMessageList)
-                .withInt("notificationBlackoutDaysFromStart", 3)
-                .withInt("notificationBlackoutDaysFromEnd", 1)
-                .withInt("numActivitiesToCompleteBurst", 6)
-                .withInt("numMissedConsecutiveDaysToNotify", 2)
-                .withInt("numMissedDaysToNotify", 3)
-                .withMap("preburstMessagesByDataGroup", preburstMessageMap)
-                .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
-        ddbNotificationConfigTable.putItem(configItem);
-
-        // SQS
-        workerSqsUrl = bridgeConfig.get("worker.request.sqs.queue.url");
-        sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
-
         // Create Bridge accounts
         developer = TestUserHelper.createAndSignInUser(NotificationTest.class, false, Role.DEVELOPER);
         researcher = TestUserHelper.createAndSignInUser(NotificationTest.class, false, Role.RESEARCHER);
@@ -174,6 +162,90 @@ public class NotificationTest {
             SchedulePlan newPlan = new SchedulePlan().label(TEST_ID).strategy(strategy);
             developer.getClient(SchedulesApi.class).createSchedulePlan(newPlan).execute();
         }
+
+        // Make sure we have the engagement survey.
+        List<Survey> surveyList = developer.getClient(SurveysApi.class).getPublishedSurveys().execute().body()
+                .getItems();
+        Optional<Survey> optionalEngagementSurvey = surveyList.stream()
+                .filter(s -> TEST_ENGAGEMENT_SURVEY.equals(s.getIdentifier())).findAny();
+        String surveyGuid;
+        if (optionalEngagementSurvey.isPresent()) {
+            surveyGuid = optionalEngagementSurvey.get().getGuid();
+        } else {
+            SurveyQuestion surveyQuestion = new SurveyQuestion();
+            surveyQuestion.setIdentifier(STUDY_COMMITMENT_SURVEY_QUESTION);
+            surveyQuestion.setUiHint(UIHint.TEXTFIELD);
+            surveyQuestion.setPrompt("Benefits to study?");
+            surveyQuestion.setConstraints(new StringConstraints().maxLength(50).dataType(DataType.STRING));
+
+            Survey surveyToCreate = new Survey();
+            surveyToCreate.setName(TEST_ENGAGEMENT_SURVEY);
+            surveyToCreate.setIdentifier(TEST_ENGAGEMENT_SURVEY);
+            surveyToCreate.addElementsItem(surveyQuestion);
+
+            GuidCreatedOnVersionHolder surveyKeys = developer.getClient(SurveysApi.class).createSurvey(surveyToCreate)
+                    .execute().body();
+            surveyGuid = surveyKeys.getGuid();
+
+            developer.getClient(SurveysApi.class).publishSurvey(surveyGuid, surveyKeys.getCreatedOn(),
+                    null).execute();
+        }
+
+        // Make sure we have a schedule for the engagement survey.
+        Optional<SchedulePlan> optionalEngagementSurveySchedulePlan = schedulePlanList.stream()
+                .filter(s -> TEST_ENGAGEMENT_SURVEY.equals(s.getLabel())).findAny();
+        if (!optionalEngagementSurveySchedulePlan.isPresent()) {
+            SurveyReference surveyReference = new SurveyReference().guid(surveyGuid);
+            Activity activity = new Activity().label(TEST_ENGAGEMENT_SURVEY).survey(surveyReference);
+            Schedule schedule = new Schedule().label(TEST_ENGAGEMENT_SURVEY).scheduleType(ScheduleType.ONCE)
+                    .addActivitiesItem(activity);
+            ScheduleStrategy strategy = new SimpleScheduleStrategy().schedule(schedule).type("SimpleScheduleStrategy");
+            SchedulePlan newPlan = new SchedulePlan().label(TEST_ENGAGEMENT_SURVEY).strategy(strategy);
+            developer.getClient(SchedulesApi.class).createSchedulePlan(newPlan).execute();
+        }
+
+        // AWS
+        Config bridgeConfig = TestUtils.loadConfig();
+        AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(bridgeConfig);
+
+        // DDB tables
+        DynamoDB ddbClient = TestUtils.getDdbClient(awsCredentialsProvider);
+        Table ddbNotificationConfigTable = TestUtils.getDdbTable(bridgeConfig, ddbClient,
+                "NotificationConfig");
+        ddbNotificationLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "NotificationLog");
+        ddbWorkerLogTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "WorkerLog");
+
+        // Ensure notification config
+        List<String> missedCumulativeMessageList = ImmutableList.of(MESSAGE_CUMULATIVE);
+        List<String> missedEarlyMessageList = ImmutableList.of(MESSAGE_EARLY);
+        List<String> missedLateMessageList = ImmutableList.of(MESSAGE_LATE);
+        Map<String, List<String>> preburstMessageMap = ImmutableMap.of(
+                PREBURST_GROUP_1, ImmutableList.of(MESSAGE_PRE_BURST_1),
+                PREBURST_GROUP_2, ImmutableList.of(MESSAGE_PRE_BURST_2));
+
+        Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
+                .withInt("burstDurationDays", 9)
+                .withString("appUrl", APP_URL)
+                .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
+                .withString("burstTaskId", TEST_ID)
+                .withInt("earlyLateCutoffDays", 5)
+                .withString("engagementSurveyGuid", surveyGuid)
+                .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
+                .withList("missedCumulativeActivitiesMessagesList", missedCumulativeMessageList)
+                .withList("missedEarlyActivitiesMessagesList", missedEarlyMessageList)
+                .withList("missedLaterActivitiesMessagesList", missedLateMessageList)
+                .withInt("notificationBlackoutDaysFromStart", 3)
+                .withInt("notificationBlackoutDaysFromEnd", 1)
+                .withInt("numActivitiesToCompleteBurst", 6)
+                .withInt("numMissedConsecutiveDaysToNotify", 2)
+                .withInt("numMissedDaysToNotify", 3)
+                .withMap("preburstMessagesByDataGroup", preburstMessageMap)
+                .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
+        ddbNotificationConfigTable.putItem(configItem);
+
+        // SQS
+        workerSqsUrl = bridgeConfig.get("worker.request.sqs.queue.url");
+        sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
 
         // Make snapshots of certain event times, so we don't have random clock skew errors.
         today = LocalDate.now(LOCAL_TIME_ZONE);
@@ -344,7 +416,7 @@ public class NotificationTest {
 
         Item preburstNotification = notificationList.get(0);
         assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
-        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST_1);
+        assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_1);
 
         // Did first day, but missed the second and third days.
         completeActivitiesForDateIndices(user, 0);
@@ -357,7 +429,7 @@ public class NotificationTest {
         assertEquals(notificationList.get(0), preburstNotification);
 
         assertEquals(notificationList.get(1).getString("notificationType"), "EARLY");
-        assertEquals(notificationList.get(1).getString("message"), MESSAGE_EARLY);
+        assertEquals(notificationList.get(1).getString("message"), RESOLVED_MESSAGE_EARLY);
     }
 
     @Test
@@ -374,7 +446,7 @@ public class NotificationTest {
 
         Item preburstNotification = notificationList.get(0);
         assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
-        assertEquals(preburstNotification.getString("message"), MESSAGE_PRE_BURST_2);
+        assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_2);
     }
 
     @Test
@@ -387,7 +459,7 @@ public class NotificationTest {
         List<Item> notificationList = getNotificationsForUser("threeTotalDays", today.plusDays(4), user);
         assertEquals(notificationList.size(), 1);
         assertEquals(notificationList.get(0).getString("notificationType"), "CUMULATIVE");
-        assertEquals(notificationList.get(0).getString("message"), MESSAGE_CUMULATIVE);
+        assertEquals(notificationList.get(0).getString("message"), RESOLVED_MESSAGE_CUMULATIVE);
     }
 
     @Test
@@ -402,7 +474,7 @@ public class NotificationTest {
                 user);
         assertEquals(notificationList.size(), 1);
         assertEquals(notificationList.get(0).getString("notificationType"), "LATE");
-        assertEquals(notificationList.get(0).getString("message"), MESSAGE_LATE);
+        assertEquals(notificationList.get(0).getString("message"), RESOLVED_MESSAGE_LATE);
     }
 
     @Test
@@ -501,13 +573,27 @@ public class NotificationTest {
     }
 
     private static void initUser(TestUserHelper.TestUser user) throws Exception {
-        // To initialize user, get activities for the next 28 days. Since get activities is limited to 15 days, do this
-        // in 14 day increments.
+        // To initialize user, get activities for the next 28 days.
         DateTime startOfToday = today.toDateTimeAtStartOfDay(LOCAL_TIME_ZONE);
-        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(14))
+        List<ScheduledActivity> activityList = user.getClient(ActivitiesApi.class)
+                .getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(31)).execute().body()
+                .getItems();
+
+        // One of these is the engagement survey. Find it and post Client Data back.
+        Optional<ScheduledActivity> optionalEngagementSurveyActivity = activityList.stream()
+                .filter(activity -> {
+                    SurveyReference surveyReference = activity.getActivity().getSurvey();
+                    return surveyReference != null && TEST_ENGAGEMENT_SURVEY.equals(surveyReference.getIdentifier());
+                }).findAny();
+        assertTrue(optionalEngagementSurveyActivity.isPresent());
+
+        ScheduledActivity engagementSurveyActivity = optionalEngagementSurveyActivity.get();
+        Map<String, String> clientData = new HashMap<>();
+        clientData.put(STUDY_COMMITMENT_SURVEY_QUESTION, STUDY_COMMITMENT_DUMMY_ANSWER);
+        engagementSurveyActivity.setClientData(clientData);
+
+        user.getClient(ActivitiesApi.class).updateScheduledActivities(ImmutableList.of(engagementSurveyActivity))
                 .execute();
-        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday.plusDays(14),
-                startOfToday.plusDays(28)).execute();
     }
 
     private static void completeActivitiesForDateIndices(TestUserHelper.TestUser user, int... indices)
