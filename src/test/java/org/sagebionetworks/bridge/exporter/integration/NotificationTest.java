@@ -17,6 +17,7 @@ import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -31,7 +32,6 @@ import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
-import org.sagebionetworks.bridge.rest.RestUtils;
 import org.sagebionetworks.bridge.rest.api.ActivitiesApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesApi;
@@ -41,6 +41,7 @@ import org.sagebionetworks.bridge.rest.model.Activity;
 import org.sagebionetworks.bridge.rest.model.DataType;
 import org.sagebionetworks.bridge.rest.model.GuidCreatedOnVersionHolder;
 import org.sagebionetworks.bridge.rest.model.IdentifierUpdate;
+import org.sagebionetworks.bridge.rest.model.Phone;
 import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Schedule;
 import org.sagebionetworks.bridge.rest.model.SchedulePlan;
@@ -71,6 +72,9 @@ public class NotificationTest {
     private static final String PREBURST_GROUP_2 = "sdk-int-2";
     private static final String STUDY_COMMITMENT_SURVEY_QUESTION = "benefits";
     private static final String STUDY_COMMITMENT_DUMMY_ANSWER = "This is my study commitment";
+
+    // From receivefreesms.com.
+    private static final Phone SECOND_USER_PHONE_NUMBER = new Phone().regionCode("US").number("+14243346702");
 
     // Message strings.
     private static final String MESSAGE_CUMULATIVE = "Test notification (cumulative activities) ${studyCommitment} ${url}";
@@ -396,7 +400,7 @@ public class NotificationTest {
     private static void testNoNotification(String testName, LocalDate date, TestUserHelper.TestUser user)
             throws Exception {
         // Execute
-        executeNotificationWorker(testName, date);
+        executeNotificationWorker(testName, date, user.getUserId());
 
         // Verify no entries in the notification log.
         Iterator<Item> itemIter = ddbNotificationLogTable.query("userId", user.getUserId()).iterator();
@@ -409,27 +413,42 @@ public class NotificationTest {
         // notification doesn't prevent the regular notification from happening.
         user = createAndInitUser();
 
-        // Technically, the notification worker will never process a user _before_ they're enrolled. But for the
-        // purposes of this test, this represents sending the pre-burst notification a day before the start of burst.
-        List<Item> notificationList = getNotificationsForUser("preburst", today.minusDays(1), user);
-        assertEquals(notificationList.size(), 1);
+        // Create a second user. We pass in the first user in the userList, so this second user should never receive
+        // notifications.
+        TestUserHelper.TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
+        try {
+            initUser(secondUser);
 
-        Item preburstNotification = notificationList.get(0);
-        assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
-        assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_1);
+            // Technically, the notification worker will never process a user _before_ they're enrolled. But for the
+            // purposes of this test, this represents sending the pre-burst notification a day before the start of burst.
+            List<Item> notificationList = getNotificationsForUser("preburst", today.minusDays(1), user);
+            assertEquals(notificationList.size(), 1);
 
-        // Did first day, but missed the second and third days.
-        completeActivitiesForDateIndices(user, 0);
+            Item preburstNotification = notificationList.get(0);
+            assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
+            assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_1);
 
-        // Run test for normal notification. We have 2 notifications now, and the first one should be the same as the
-        // one we saw earlier.
-        notificationList = getNotificationsForUser("twoConsecutiveDays", null, user);
-        assertEquals(notificationList.size(), 2);
+            // Did first day, but missed the second and third days.
+            completeActivitiesForDateIndices(user, 0);
 
-        assertEquals(notificationList.get(0), preburstNotification);
+            // Run test for normal notification. We have 2 notifications now, and the first one should be the same as the
+            // one we saw earlier.
+            notificationList = getNotificationsForUser("twoConsecutiveDays", null, user);
+            assertEquals(notificationList.size(), 2);
 
-        assertEquals(notificationList.get(1).getString("notificationType"), "EARLY");
-        assertEquals(notificationList.get(1).getString("message"), RESOLVED_MESSAGE_EARLY);
+            assertEquals(notificationList.get(0), preburstNotification);
+
+            assertEquals(notificationList.get(1).getString("notificationType"), "EARLY");
+            assertEquals(notificationList.get(1).getString("message"), RESOLVED_MESSAGE_EARLY);
+
+            // Second user received no notifications. (Don't run getNotificationsForUser(), since this kicks off the
+            // Worker job again.
+            Iterable<Item> secondUserItemIter = ddbNotificationLogTable.query("userId", secondUser
+                    .getUserId());
+            assertFalse(secondUserItemIter.iterator().hasNext());
+        } finally {
+            secondUser.signOutAndDeleteUser();
+        }
     }
 
     @Test
@@ -495,17 +514,45 @@ public class NotificationTest {
         assertEquals(notificationList.get(0).getLong("notificationTime"), fakeNotificationTimeMillis);
     }
 
+    @Test
+    public void withoutUserList() throws Exception {
+        // Create two users and execute without user list.
+        user = createAndInitUser();
+        TestUserHelper.TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
+        try {
+            initUser(secondUser);
+
+            executeNotificationWorker("withoutUserList", null, null);
+
+            // Both users have a notification.
+            Iterable<Item> userItemIter = ddbNotificationLogTable.query("userId", user.getUserId());
+            List<Item> userItemList = ImmutableList.copyOf(userItemIter);
+            assertEquals(userItemList.size(), 1);
+            assertEquals(userItemList.get(0).getString("notificationType"), "EARLY");
+            assertEquals(userItemList.get(0).getString("message"), RESOLVED_MESSAGE_EARLY);
+
+            Iterable<Item> secondUserItemIter = ddbNotificationLogTable.query("userId", secondUser
+                    .getUserId());
+            List<Item> secondUserItemList = ImmutableList.copyOf(secondUserItemIter);
+            assertEquals(secondUserItemList.size(), 1);
+            assertEquals(secondUserItemList.get(0).getString("notificationType"), "EARLY");
+            assertEquals(secondUserItemList.get(0).getString("message"), RESOLVED_MESSAGE_EARLY);
+        } finally {
+            secondUser.signOutAndDeleteUser();
+        }
+    }
+
     private static List<Item> getNotificationsForUser(String testName, LocalDate date, TestUserHelper.TestUser user)
             throws Exception {
         // Execute
-        executeNotificationWorker(testName, date);
+        executeNotificationWorker(testName, date, user.getUserId());
 
         // Get notification log for user.
         Iterable<Item> itemIter = ddbNotificationLogTable.query("userId", user.getUserId());
         return ImmutableList.copyOf(itemIter);
     }
 
-    private static void executeNotificationWorker(String testName, LocalDate date) throws Exception {
+    private static void executeNotificationWorker(String testName, LocalDate date, String userId) throws Exception {
         System.out.println(DateTime.now(LOCAL_TIME_ZONE).toString() + " Executing Notification Worker for test " +
                 testName);
 
@@ -524,6 +571,11 @@ public class NotificationTest {
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
+        if (userId != null) {
+            ArrayNode userListNode = DefaultObjectMapper.INSTANCE.createArrayNode();
+            userListNode.add(userId);
+            ((ObjectNode) requestNode.get("body")).set("userList", userListNode);
+        }
         sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
 
         // Wait until the worker is finished.
@@ -565,7 +617,11 @@ public class NotificationTest {
     }
 
     private static TestUserHelper.TestUser createUser() throws Exception {
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        return createUser(IntegTestUtils.PHONE);
+    }
+
+    private static TestUserHelper.TestUser createUser(Phone phone) throws Exception {
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(phone).password("password1");
         signUp.addDataGroupsItem(PREBURST_GROUP_1);
         TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
                 signUp);
