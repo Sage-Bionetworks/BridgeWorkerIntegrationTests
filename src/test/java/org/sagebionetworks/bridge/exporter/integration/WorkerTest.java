@@ -39,16 +39,10 @@ import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.HealthDataApi;
 import org.sagebionetworks.bridge.rest.api.StudyReportsApi;
-import org.sagebionetworks.bridge.rest.api.UploadSchemasApi;
-import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecord;
 import org.sagebionetworks.bridge.rest.model.HealthDataSubmission;
 import org.sagebionetworks.bridge.rest.model.ReportData;
 import org.sagebionetworks.bridge.rest.model.Role;
-import org.sagebionetworks.bridge.rest.model.UploadFieldDefinition;
-import org.sagebionetworks.bridge.rest.model.UploadFieldType;
-import org.sagebionetworks.bridge.rest.model.UploadSchema;
-import org.sagebionetworks.bridge.rest.model.UploadSchemaType;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
@@ -57,9 +51,6 @@ import org.sagebionetworks.bridge.util.IntegTestUtils;
 public class WorkerTest {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerTest.class);
 
-    private static final String LARGE_TEXT_ATTACHMENT_FIELD_NAME = "my-large-text-attachment";
-    private static final String LARGE_TEXT_ATTACHMENT_SCHEMA_ID = "large-text-attachment-test";
-    private static final long LARGE_TEXT_ATTACHMENT_SCHEMA_REV = 1;
     private static final String PHONE_INFO = "BridgeWorkerIntegTest";
     private static final int POLL_INTERVAL_SECONDS = 5;
     private static final int POLL_MAX_ITERATIONS = 6;
@@ -116,24 +107,7 @@ public class WorkerTest {
         user = TestUserHelper.createAndSignInUser(WorkerTest.class, true);
 
         // ensure schemas exist, so we have something to upload against
-        UploadSchemasApi uploadSchemasApi = developer.getClient(UploadSchemasApi.class);
-
-        // large-text-attachment-test schema
-        UploadSchema largeTextAttachmentTestSchema = null;
-        try {
-            largeTextAttachmentTestSchema = uploadSchemasApi.getMostRecentUploadSchema(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                    .execute().body();
-        } catch (EntityNotFoundException ex) {
-            // no-op
-        }
-        if (largeTextAttachmentTestSchema == null) {
-            UploadFieldDefinition largeTextFieldDef = new UploadFieldDefinition()
-                    .name(LARGE_TEXT_ATTACHMENT_FIELD_NAME).type(UploadFieldType.LARGE_TEXT_ATTACHMENT);
-            largeTextAttachmentTestSchema = new UploadSchema().schemaId(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                    .revision(LARGE_TEXT_ATTACHMENT_SCHEMA_REV).name("Large Text Attachment Test")
-                    .schemaType(UploadSchemaType.IOS_DATA).addFieldDefinitionsItem(largeTextFieldDef);
-            uploadSchemasApi.createUploadSchema(largeTextAttachmentTestSchema).execute();
-        }
+        TestUtils.ensureSchemas(developer);
 
         // Take a snapshot of "now" so we don't get weird clock drift while the test is running.
         now = DateTime.now();
@@ -148,11 +122,11 @@ public class WorkerTest {
 
         // Submit health data - Note that we build maps, since Jackson and GSON don't mix very well.
         Map<String, String> dataMap = new HashMap<>();
-        dataMap.put(LARGE_TEXT_ATTACHMENT_FIELD_NAME, "This is my large text attachment");
+        dataMap.put(TestUtils.LARGE_TEXT_ATTACHMENT_FIELD_NAME, "This is my large text attachment");
 
         HealthDataSubmission submission = new HealthDataSubmission().appVersion("integTestRunId " + integTestRunId)
-                .createdOn(uploadDateTime).phoneInfo(PHONE_INFO).schemaId(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                .schemaRevision(LARGE_TEXT_ATTACHMENT_SCHEMA_REV).data(dataMap);
+                .createdOn(uploadDateTime).phoneInfo(PHONE_INFO).schemaId(TestUtils.LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
+                .schemaRevision(TestUtils.LARGE_TEXT_ATTACHMENT_SCHEMA_REV).data(dataMap);
 
         HealthDataApi healthDataApi = user.getClient(HealthDataApi.class);
         HealthDataRecord record = healthDataApi.submitHealthData(submission).execute().body();
