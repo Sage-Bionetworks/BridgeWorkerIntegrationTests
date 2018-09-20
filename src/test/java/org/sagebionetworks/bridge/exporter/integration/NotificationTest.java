@@ -122,7 +122,7 @@ public class NotificationTest {
         boolean shouldUpdateStudy = false;
 
         if (!study.getAutomaticCustomEvents().containsKey(TEST_ID)) {
-            study.putAutomaticCustomEventsItem(TEST_ID, "P2W");
+            study.putAutomaticCustomEventsItem(TEST_ID, "enrollment:P2W");
             shouldUpdateStudy = true;
         }
 
