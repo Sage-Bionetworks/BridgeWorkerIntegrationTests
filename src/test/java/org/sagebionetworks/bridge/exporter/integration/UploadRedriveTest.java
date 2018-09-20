@@ -77,7 +77,7 @@ public class UploadRedriveTest {
         userApi.updateUsersParticipantRecord(participant).execute();
 
         // Upload. Verify that upload succeeded and is tagged with ALL_QUALIFIED_RESEARCHERS.
-        uploadValidationStatus = TestUtils.upload(config, s3Helper, user);
+        uploadValidationStatus = TestUtils.upload(user);
         assertEquals(uploadValidationStatus.getStatus(), UploadStatus.SUCCEEDED);
         assertEquals(uploadValidationStatus.getRecord().getUserSharingScope(), SharingScope.ALL_QUALIFIED_RESEARCHERS);
     }
@@ -98,13 +98,13 @@ public class UploadRedriveTest {
 
     @Test
     public void redriveUploadId() throws Exception {
-        executeTest(uploadValidationStatus.getId(), "UPLOAD_ID");
+        executeTest(uploadValidationStatus.getId(), "upload_id");
         validateUpload(uploadValidationStatus.getId());
     }
 
     @Test
     public void redriveRecordId() throws Exception {
-        executeTest(uploadValidationStatus.getRecord().getId(), "RECORD_ID");
+        executeTest(uploadValidationStatus.getRecord().getId(), "record_id");
         validateUpload(uploadValidationStatus.getId());
     }
 

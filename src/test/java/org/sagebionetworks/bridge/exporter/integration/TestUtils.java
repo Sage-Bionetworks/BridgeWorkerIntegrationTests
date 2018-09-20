@@ -7,13 +7,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.PrivateKey;
-import java.security.cert.CertificateEncodingException;
-import java.security.cert.X509Certificate;
 import java.util.Iterator;
-import java.util.Map;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.Locale;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
@@ -24,16 +19,9 @@ import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.amazonaws.services.sqs.AmazonSQSClient;
-import com.google.common.collect.ImmutableMap;
-import org.apache.commons.io.output.ByteArrayOutputStream;
-import org.bouncycastle.cms.CMSException;
-import org.joda.time.DateTime;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.config.PropertiesConfig;
-import org.sagebionetworks.bridge.crypto.BcCmsEncryptor;
-import org.sagebionetworks.bridge.crypto.CmsEncryptor;
-import org.sagebionetworks.bridge.crypto.PemUtils;
 import org.sagebionetworks.bridge.rest.RestUtils;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.UploadSchemasApi;
@@ -46,7 +34,6 @@ import org.sagebionetworks.bridge.rest.model.UploadSchema;
 import org.sagebionetworks.bridge.rest.model.UploadSchemaType;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.rest.model.UploadValidationStatus;
-import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 
@@ -127,62 +114,17 @@ public class TestUtils {
         return sqsHelper;
     }
 
-    public static UploadValidationStatus upload(Config config, S3Helper s3Helper, TestUserHelper.TestUser user)
-            throws CertificateEncodingException, CMSException, IOException {
-        // Create file contents.
-        String infoJsonText = "{\n" +
-                "   \"appVersion\":\"version 1.0.0, build 1\",\n" +
-                "   \"createdOn\":\"" + DateTime.now() + "\",\n" +
-                "   \"format\":\"v2_generic\",\n" +
-                "   \"item\":\"" + LARGE_TEXT_ATTACHMENT_SCHEMA_ID + "\",\n" +
-                "   \"phoneInfo\":\"Worker Integ Tests\",\n" +
-                "   \"schemaRevision\":" + LARGE_TEXT_ATTACHMENT_SCHEMA_REV + "\n" +
-                "}";
-
-        String attachmentText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Phasellus orci aliquam.";
-
-        Map<String, String> fileMap = ImmutableMap.<String, String>builder()
-                .put("info.json", infoJsonText)
-                .put(LARGE_TEXT_ATTACHMENT_FIELD_NAME, attachmentText)
-                .build();
-
-        // Zip.
-        byte[] zippedBytes;
-        try (final ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                final ZipOutputStream zos = new ZipOutputStream(baos)) {
-            for (Map.Entry<String, String> oneData : fileMap.entrySet()) {
-                ZipEntry zipEntry = new ZipEntry(oneData.getKey());
-                zos.putNextEntry(zipEntry);
-                zos.write(oneData.getValue().getBytes());
-                zos.closeEntry();
-            }
-            zos.flush();
-            zippedBytes = baos.toByteArray();
-        }
-
-        // Encrypt. For whatever reason, the encryptor requires both the public and the private key.
-        // TODO: Fix the encryptor to require only one of the keys, so that the integ tests don't need to download the
-        // private key.
-        String certPem = s3Helper.readS3FileAsString(config.get("upload.cms.cert.bucket"), "api.pem");
-        X509Certificate cert = PemUtils.loadCertificateFromPem(certPem);
-
-        // download private key
-        String privKeyPem = s3Helper.readS3FileAsString(config.get("upload.cms.priv.bucket"), "api.pem");
-        PrivateKey privKey = PemUtils.loadPrivateKeyFromPem(privKeyPem);
-
-        CmsEncryptor encryptor = new BcCmsEncryptor(cert, privKey);
-        byte[] encryptedBytes = encryptor.encrypt(zippedBytes);
-
-        // Write to temp file.
-        File tempDir = com.google.common.io.Files.createTempDir();
-        File encryptedFile = new File(tempDir, "upload-encrypted");
-        com.google.common.io.Files.write(encryptedBytes, encryptedFile);
+    public static UploadValidationStatus upload(TestUserHelper.TestUser user) throws IOException {
+        // Get file from resources.
+        String envName = user.getClientManager().getConfig().getEnvironment().name().toLowerCase(Locale.ENGLISH);
+        String filePath = "src/test/resources/uploads/" + envName + "/large-text-attachment-generic";
+        File fileToUpload = new File(filePath);
 
         // Upload.
         ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
-        UploadRequest request = RestUtils.makeUploadRequestForFile(encryptedFile);
+        UploadRequest request = RestUtils.makeUploadRequestForFile(fileToUpload);
         UploadSession session = usersApi.requestUploadSession(request).execute().body();
-        RestUtils.uploadToS3(encryptedFile, session.getUrl());
+        RestUtils.uploadToS3(fileToUpload, session.getUrl());
         return usersApi.completeUploadSession(session.getId(), true).execute().body();
     }
 
