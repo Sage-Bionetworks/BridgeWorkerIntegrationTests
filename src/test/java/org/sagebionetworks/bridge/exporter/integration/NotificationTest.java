@@ -16,7 +16,6 @@ import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
-import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableList;
@@ -66,8 +65,6 @@ public class NotificationTest {
     private static final String APP_URL = "http://example.com/app-url";
     private static final String EXCLUDED_DATA_GROUP = "integ-test-excluded";
     private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
-    private static final int MAX_POLL_ITERATIONS = 6;
-    private static final long POLL_DELAY_MILLIS = 5000;
     private static final String PREBURST_GROUP_1 = "sdk-int-1";
     private static final String PREBURST_GROUP_2 = "sdk-int-2";
     private static final String STUDY_COMMITMENT_SURVEY_QUESTION = "benefits";
@@ -556,7 +553,8 @@ public class NotificationTest {
         System.out.println(DateTime.now(LOCAL_TIME_ZONE).toString() + " Executing Notification Worker for test " +
                 testName);
 
-        long previousFinishTime = getLastFinishedTime();
+        long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
+                "ActivityNotificationWorker");
 
         // Create request
         if (date == null) {
@@ -579,35 +577,7 @@ public class NotificationTest {
         sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
 
         // Wait until the worker is finished.
-        pollWorkerLog(previousFinishTime);
-    }
-
-    private static long getLastFinishedTime() {
-        // To get the latest notification time, sort the index in reverse and limit the result set to 1.
-        QuerySpec query = new QuerySpec()
-                .withHashKey("workerId", "ActivityNotificationWorker")
-                .withScanIndexForward(false).withMaxResultSize(1);
-        Iterator<Item> itemIter = ddbWorkerLogTable.query(query).iterator();
-        if (itemIter.hasNext()) {
-            Item item = itemIter.next();
-            return item.getLong("finishTime");
-        } else {
-            // Arbitrarily return 0. That's far enough in the past that any reasonable result will be after this.
-            return 0;
-        }
-    }
-
-    // Polls the worker log until the worker is finished, as determined by a new timestamp after the one specified.
-    private static void pollWorkerLog(long previousFinishTime) throws Exception {
-        long finishTime = previousFinishTime;
-        for (int i = 0; i < MAX_POLL_ITERATIONS; i++) {
-            Thread.sleep(POLL_DELAY_MILLIS);
-            finishTime = getLastFinishedTime();
-            if (finishTime > previousFinishTime) {
-                break;
-            }
-        }
-        assertTrue(finishTime > previousFinishTime, "Worker log has updated finish time");
+        TestUtils.pollWorkerLog(ddbWorkerLogTable, "ActivityNotificationWorker", previousFinishTime);
     }
 
     private static TestUserHelper.TestUser createAndInitUser() throws Exception {
