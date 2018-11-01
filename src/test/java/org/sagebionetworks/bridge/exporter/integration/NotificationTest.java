@@ -32,15 +32,14 @@ import org.testng.annotations.Test;
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.ActivitiesApi;
+import org.sagebionetworks.bridge.rest.api.ParticipantReportsApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesApi;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
-import org.sagebionetworks.bridge.rest.api.SurveysApi;
 import org.sagebionetworks.bridge.rest.model.Activity;
-import org.sagebionetworks.bridge.rest.model.DataType;
-import org.sagebionetworks.bridge.rest.model.GuidCreatedOnVersionHolder;
 import org.sagebionetworks.bridge.rest.model.IdentifierUpdate;
 import org.sagebionetworks.bridge.rest.model.Phone;
+import org.sagebionetworks.bridge.rest.model.ReportData;
 import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Schedule;
 import org.sagebionetworks.bridge.rest.model.SchedulePlan;
@@ -49,13 +48,8 @@ import org.sagebionetworks.bridge.rest.model.ScheduleType;
 import org.sagebionetworks.bridge.rest.model.ScheduledActivity;
 import org.sagebionetworks.bridge.rest.model.SignUp;
 import org.sagebionetworks.bridge.rest.model.SimpleScheduleStrategy;
-import org.sagebionetworks.bridge.rest.model.StringConstraints;
 import org.sagebionetworks.bridge.rest.model.Study;
-import org.sagebionetworks.bridge.rest.model.Survey;
-import org.sagebionetworks.bridge.rest.model.SurveyQuestion;
-import org.sagebionetworks.bridge.rest.model.SurveyReference;
 import org.sagebionetworks.bridge.rest.model.TaskReference;
-import org.sagebionetworks.bridge.rest.model.UIHint;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
@@ -64,11 +58,16 @@ import org.sagebionetworks.bridge.util.IntegTestUtils;
 public class NotificationTest {
     private static final String APP_URL = "http://example.com/app-url";
     private static final String EXCLUDED_DATA_GROUP = "integ-test-excluded";
-    private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
+    private static final LocalDate GLOBAL_DATE = LocalDate.parse("2000-12-31");
     private static final String PREBURST_GROUP_1 = "sdk-int-1";
     private static final String PREBURST_GROUP_2 = "sdk-int-2";
+    private static final String REPORT_ID_ENGAGEMENT = "Engagement";
     private static final String STUDY_COMMITMENT_SURVEY_QUESTION = "benefits";
     private static final String STUDY_COMMITMENT_DUMMY_ANSWER = "This is my study commitment";
+
+    // This is an arbitrary timezone for the purposes of our tests. To avoid Daylight Savings Time bugs, make this a
+    // fixed offset.
+    private static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forOffsetHours(-8);
 
     // From receivefreesms.com.
     private static final Phone SECOND_USER_PHONE_NUMBER = new Phone().regionCode("US").number("+14243346702");
@@ -94,9 +93,6 @@ public class NotificationTest {
 
     // Use this unique ID for event IDs, schedule labels, task IDs, etc.
     private static final String TEST_ID = "notification-integ-test";
-
-    // And again for the engagement survey and schedule.
-    private static final String TEST_ENGAGEMENT_SURVEY = "notification-integ-engagement-survey";
 
     private static LocalDate defaultTestDate;
     private static LocalDate today;
@@ -164,47 +160,6 @@ public class NotificationTest {
             developer.getClient(SchedulesApi.class).createSchedulePlan(newPlan).execute();
         }
 
-        // Make sure we have the engagement survey.
-        List<Survey> surveyList = developer.getClient(SurveysApi.class).getPublishedSurveys().execute().body()
-                .getItems();
-        Optional<Survey> optionalEngagementSurvey = surveyList.stream()
-                .filter(s -> TEST_ENGAGEMENT_SURVEY.equals(s.getIdentifier())).findAny();
-        String surveyGuid;
-        if (optionalEngagementSurvey.isPresent()) {
-            surveyGuid = optionalEngagementSurvey.get().getGuid();
-        } else {
-            SurveyQuestion surveyQuestion = new SurveyQuestion();
-            surveyQuestion.setIdentifier(STUDY_COMMITMENT_SURVEY_QUESTION);
-            surveyQuestion.setUiHint(UIHint.TEXTFIELD);
-            surveyQuestion.setPrompt("Benefits to study?");
-            surveyQuestion.setConstraints(new StringConstraints().maxLength(50).dataType(DataType.STRING));
-
-            Survey surveyToCreate = new Survey();
-            surveyToCreate.setName(TEST_ENGAGEMENT_SURVEY);
-            surveyToCreate.setIdentifier(TEST_ENGAGEMENT_SURVEY);
-            surveyToCreate.addElementsItem(surveyQuestion);
-
-            GuidCreatedOnVersionHolder surveyKeys = developer.getClient(SurveysApi.class).createSurvey(surveyToCreate)
-                    .execute().body();
-            surveyGuid = surveyKeys.getGuid();
-
-            developer.getClient(SurveysApi.class).publishSurvey(surveyGuid, surveyKeys.getCreatedOn(),
-                    null).execute();
-        }
-
-        // Make sure we have a schedule for the engagement survey.
-        Optional<SchedulePlan> optionalEngagementSurveySchedulePlan = schedulePlanList.stream()
-                .filter(s -> TEST_ENGAGEMENT_SURVEY.equals(s.getLabel())).findAny();
-        if (!optionalEngagementSurveySchedulePlan.isPresent()) {
-            SurveyReference surveyReference = new SurveyReference().guid(surveyGuid);
-            Activity activity = new Activity().label(TEST_ENGAGEMENT_SURVEY).survey(surveyReference);
-            Schedule schedule = new Schedule().label(TEST_ENGAGEMENT_SURVEY).scheduleType(ScheduleType.ONCE)
-                    .addActivitiesItem(activity);
-            ScheduleStrategy strategy = new SimpleScheduleStrategy().schedule(schedule).type("SimpleScheduleStrategy");
-            SchedulePlan newPlan = new SchedulePlan().label(TEST_ENGAGEMENT_SURVEY).strategy(strategy);
-            developer.getClient(SchedulesApi.class).createSchedulePlan(newPlan).execute();
-        }
-
         // AWS
         Config bridgeConfig = TestUtils.loadConfig();
         AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(bridgeConfig);
@@ -230,7 +185,6 @@ public class NotificationTest {
                 .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
                 .withString("burstTaskId", TEST_ID)
                 .withInt("earlyLateCutoffDays", 5)
-                .withString("engagementSurveyGuid", surveyGuid)
                 .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
                 .withList("missedCumulativeActivitiesMessagesList", missedCumulativeMessageList)
                 .withList("missedEarlyActivitiesMessagesList", missedEarlyMessageList)
@@ -601,24 +555,14 @@ public class NotificationTest {
     private static void initUser(TestUserHelper.TestUser user) throws Exception {
         // To initialize user, get activities for the next 28 days.
         DateTime startOfToday = today.toDateTimeAtStartOfDay(LOCAL_TIME_ZONE);
-        List<ScheduledActivity> activityList = user.getClient(ActivitiesApi.class)
-                .getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(31)).execute().body()
-                .getItems();
+        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(31))
+                .execute().body().getItems();
 
-        // One of these is the engagement survey. Find it and post Client Data back.
-        Optional<ScheduledActivity> optionalEngagementSurveyActivity = activityList.stream()
-                .filter(activity -> {
-                    SurveyReference surveyReference = activity.getActivity().getSurvey();
-                    return surveyReference != null && TEST_ENGAGEMENT_SURVEY.equals(surveyReference.getIdentifier());
-                }).findAny();
-        assertTrue(optionalEngagementSurveyActivity.isPresent());
-
-        ScheduledActivity engagementSurveyActivity = optionalEngagementSurveyActivity.get();
-        Map<String, String> clientData = new HashMap<>();
-        clientData.put(STUDY_COMMITMENT_SURVEY_QUESTION, STUDY_COMMITMENT_DUMMY_ANSWER);
-        engagementSurveyActivity.setClientData(clientData);
-
-        user.getClient(ActivitiesApi.class).updateScheduledActivities(ImmutableList.of(engagementSurveyActivity))
+        // Write the engagment report for the user.
+        Map<String, String> reportData = new HashMap<>();
+        reportData.put(STUDY_COMMITMENT_SURVEY_QUESTION, STUDY_COMMITMENT_DUMMY_ANSWER);
+        ReportData report = new ReportData().localDate(GLOBAL_DATE).data(reportData);
+        user.getClient(ParticipantReportsApi.class).saveParticipantReportRecordsV4(REPORT_ID_ENGAGEMENT, report)
                 .execute();
     }
 
