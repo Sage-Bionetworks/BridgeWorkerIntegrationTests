@@ -161,7 +161,6 @@ public class WorkerTest {
     // This has already been configured for dev, uat, and prod. You may need to configure it on your own in the local
     // study.
     @Test
-    @Ignore
     public void fitbitWorker() throws Exception {
         LocalDate todaysDate = now.toLocalDate();
 
