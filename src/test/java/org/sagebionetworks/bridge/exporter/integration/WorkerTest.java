@@ -33,6 +33,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
@@ -293,5 +294,49 @@ public class WorkerTest {
         Map<String, Map<String, Double>> reportMap = (Map<String, Map<String, Double>>)reportData.getData();
         Map<String, Double> reportByStatus = reportMap.get("byStatus");
         assertTrue(reportByStatus.get("enabled") > 1.9);
+    }
+    
+    @Test
+    public void retentionReporter() throws Exception {
+        DateTime startDateTime = now.minusMinutes(10);
+        DateTime endDateTime = now.plusMinutes(10);
+        String requestText = "{\n" +
+                "   \"service\":\"REPORTER\",\n" +
+                "   \"body\":{\n" +
+                "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
+                "       \"scheduleType\":\"DAILY_RETENTION\",\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"],\n" +
+                "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
+                "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
+                "   }\n" +
+                "}";
+        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
+        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
+
+        // Verify. Poll report until we get the result or we hit max iterations.
+        StudyReportsApi reportsApi = developer.getClient(StudyReportsApi.class);
+        String reportId = "-daily-retention-report";
+        LocalDate reportDate = startDateTime.toLocalDate();
+        List<ReportData> reportDataList = null;
+        for (int i = 0; i < POLL_MAX_ITERATIONS; i++) {
+            TimeUnit.SECONDS.sleep(POLL_INTERVAL_SECONDS);
+
+            reportDataList = reportsApi.getStudyReportRecords(reportId, reportDate, reportDate).execute().body()
+                    .getItems();
+            if (!reportDataList.isEmpty()) {
+                break;
+            }
+        }
+        assertNotNull(reportDataList);
+        assertFalse(reportDataList.isEmpty());
+
+        // We should have at least one report with at least 2 users.
+        assertEquals(reportDataList.size(), 1);
+        ReportData reportData = reportDataList.get(0);
+        assertEquals(reportData.getLocalDate(), reportDate);
+
+        Map<String, List<Double>> reportMap = (Map<String, List<Double>>) reportData.getData();
+        List<Double> reportBySignIn = reportMap.get("bySignIn");
+        assertTrue(reportBySignIn.get(0) > 1.9);
     }
 }
