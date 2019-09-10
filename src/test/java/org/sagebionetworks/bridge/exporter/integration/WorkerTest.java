@@ -284,16 +284,16 @@ public class WorkerTest {
         assertNotNull(reportDataList);
         assertFalse(reportDataList.isEmpty());
 
-        // We should have at least one report with at least 2 users.
+        // We should have at least one report with at least 1 user with no admin access.
         assertEquals(reportDataList.size(), 1);
         ReportData reportData = reportDataList.get(0);
         assertEquals(reportData.getLocalDate(), reportDate);
 
         // For whatever reason, Bridge is returning this as a Double rather than an Int. To avoid dealing with double
-        // rounding errors, we expect at least 2 users, but we'll check for > 1.9.
+        // rounding errors, we expect at least 2 users, but we'll check for > 0.9.
         Map<String, Map<String, Double>> reportMap = (Map<String, Map<String, Double>>)reportData.getData();
         Map<String, Double> reportByStatus = reportMap.get("byStatus");
-        assertTrue(reportByStatus.get("enabled") > 1.9);
+        assertTrue(reportByStatus.get("enabled") > 0.9);
     }
     
     @Test
@@ -330,13 +330,13 @@ public class WorkerTest {
         assertNotNull(reportDataList);
         assertFalse(reportDataList.isEmpty());
 
-        // We should have at least one report with at least 2 users.
+        // We should have at least one report with at least 1 user without admin access.
         assertEquals(reportDataList.size(), 1);
         ReportData reportData = reportDataList.get(0);
         assertEquals(reportData.getLocalDate(), reportDate);
 
         Map<String, List<Double>> reportMap = (Map<String, List<Double>>) reportData.getData();
         List<Double> reportBySignIn = reportMap.get("bySignIn");
-        assertTrue(reportBySignIn.get(0) > 1.9);
+        assertTrue(reportBySignIn.get(0) > 0.9);
     }
 }
