@@ -145,7 +145,7 @@ public class NotificationTest {
         }
 
         // Make sure we have a schedule for our integ test.
-        List<SchedulePlan> schedulePlanList = developer.getClient(SchedulesApi.class).getSchedulePlans().execute()
+        List<SchedulePlan> schedulePlanList = developer.getClient(SchedulesApi.class).getSchedulePlans(false).execute()
                 .body().getItems();
         Optional<SchedulePlan> optionalSchedulePlan = schedulePlanList.stream()
                 .filter(s -> TEST_ID.equals(s.getLabel())).findAny();
