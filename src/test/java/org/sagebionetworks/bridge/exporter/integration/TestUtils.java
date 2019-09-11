@@ -125,7 +125,7 @@ public class TestUtils {
         UploadRequest request = RestUtils.makeUploadRequestForFile(fileToUpload);
         UploadSession session = usersApi.requestUploadSession(request).execute().body();
         RestUtils.uploadToS3(fileToUpload, session.getUrl());
-        return usersApi.completeUploadSession(session.getId(), true).execute().body();
+        return usersApi.completeUploadSession(session.getId(), true, false).execute().body();
     }
 
     public static long getWorkerLastFinishedTime(Table workerLogTable, String workerId) {

@@ -72,7 +72,7 @@ public class UploadRedriveTest {
         ForConsentedUsersApi userApi = user.getClient(ForConsentedUsersApi.class);
 
         // Set user's sharing status, because this is one of the few pieces of upload metadata we can easily control.
-        StudyParticipant participant = userApi.getUsersParticipantRecord().execute().body();
+        StudyParticipant participant = userApi.getUsersParticipantRecord(false).execute().body();
         participant.setSharingScope(SharingScope.ALL_QUALIFIED_RESEARCHERS);
         userApi.updateUsersParticipantRecord(participant).execute();
 
@@ -111,7 +111,7 @@ public class UploadRedriveTest {
     private void executeTest(String idToRedrive, String redriveType) throws Exception {
         // Change the user's sharing status to sponsors_and_partners, so we can verify this change when we redrive.
         ForConsentedUsersApi userApi = user.getClient(ForConsentedUsersApi.class);
-        StudyParticipant participant = userApi.getUsersParticipantRecord().execute().body();
+        StudyParticipant participant = userApi.getUsersParticipantRecord(false).execute().body();
         participant.setSharingScope(SharingScope.SPONSORS_AND_PARTNERS);
         userApi.updateUsersParticipantRecord(participant).execute();
 
