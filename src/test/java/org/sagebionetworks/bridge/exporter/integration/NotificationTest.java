@@ -78,6 +78,7 @@ public class NotificationTest {
     private static final String MESSAGE_LATE = "Test notification (late in burst) ${studyCommitment} ${url}";
     private static final String MESSAGE_PRE_BURST_1 = "Test notification (pre-burst group 1) ${studyCommitment} ${url}";
     private static final String MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2) ${studyCommitment} ${url}";
+    private static final String MESSAGE_PRE_BURST_DEFAULT = "Test default pre-burst notification ${url}";
 
     // Resolved SMS Messages.
     private static final String RESOLVED_MESSAGE_CUMULATIVE = "Test notification (cumulative activities) " +
@@ -90,6 +91,7 @@ public class NotificationTest {
             STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
     private static final String RESOLVED_MESSAGE_PRE_BURST_2 = "Test notification (pre-burst group 2) " +
             STUDY_COMMITMENT_DUMMY_ANSWER + " " + APP_URL;
+    private static final String RESOLVED_MESSAGE_PRE_BURST_DEFAULT = "Test default pre-burst notification " + APP_URL;
 
     // Use this unique ID for event IDs, schedule labels, task IDs, etc.
     private static final String TEST_ID = "notification-integ-test";
@@ -184,6 +186,7 @@ public class NotificationTest {
                 .withString("appUrl", APP_URL)
                 .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
                 .withString("burstTaskId", TEST_ID)
+                .withString("defaultPreburstMessage", MESSAGE_PRE_BURST_DEFAULT)
                 .withInt("earlyLateCutoffDays", 5)
                 .withStringSet("excludedDataGroupSet", EXCLUDED_DATA_GROUP)
                 .withList("missedCumulativeActivitiesMessagesList", missedCumulativeMessageList)
@@ -417,6 +420,43 @@ public class NotificationTest {
         Item preburstNotification = notificationList.get(0);
         assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
         assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_2);
+    }
+
+    @Test
+    public void preburstNoStudyCommitment() throws Exception {
+        // Create user (in preburst group 1 as expected), but without a study commitment.
+        user = createUser();
+
+        // Initialize the user's activities.
+        DateTime startOfToday = today.toDateTimeAtStartOfDay(LOCAL_TIME_ZONE);
+        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(31))
+                .execute().body().getItems();
+
+        // Execute preburst test.
+        List<Item> notificationList = getNotificationsForUser("preburstNoStudyCommitment", today.minusDays(1),
+                user);
+        assertEquals(notificationList.size(), 1);
+
+        Item preburstNotification = notificationList.get(0);
+        assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
+        assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_DEFAULT);
+    }
+
+    @Test
+    public void preburstNoDataGroups() throws Exception {
+        // Create user with no pre-burst data groups.
+        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
+        initUser(user);
+
+        // Execute preburst test.
+        List<Item> notificationList = getNotificationsForUser("preburstNoDataGroups", today.minusDays(1),
+                user);
+        assertEquals(notificationList.size(), 1);
+
+        Item preburstNotification = notificationList.get(0);
+        assertEquals(preburstNotification.getString("notificationType"), "PRE_BURST");
+        assertEquals(preburstNotification.getString("message"), RESOLVED_MESSAGE_PRE_BURST_DEFAULT);
     }
 
     @Test
