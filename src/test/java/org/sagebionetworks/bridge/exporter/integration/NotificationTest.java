@@ -262,15 +262,6 @@ public class NotificationTest {
     }
 
     @Test
-    public void noActivities() throws Exception {
-        // Create a user but don't init their activities.
-        user = createUser();
-
-        // Run test
-        testNoNotification("noActivities", null, user);
-    }
-
-    @Test
     public void excludedByDataGroup() throws Exception {
         // Create user with an excluded data group
         SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
@@ -460,6 +451,29 @@ public class NotificationTest {
     }
 
     @Test
+    public void noActivities() throws Exception {
+        // Create a user but don't init their activities. We treat this as the user didn't do their activities, and
+        // still send notifications.
+        user = createUser();
+
+        // We need to call activities at least once, to instantiate the custom events so we can detect study bursts.
+        // However, we just get the first day of events, and then we ask for the second burst's notifications, where
+        // we _won't_ have activities.
+        DateTime startOfToday = today.toDateTimeAtStartOfDay(LOCAL_TIME_ZONE);
+        user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(1))
+                .execute().body().getItems();
+
+        // Still need to set study commitment, because our test message depends on it.
+        setStudyCommitment(user);
+
+        // Run test. Test on day 17, which is the next study burst (14 days) plus the blackout period (3 days).
+        List<Item> notificationList = getNotificationsForUser("noActivities", today.plusDays(17), user);
+        assertEquals(notificationList.size(), 1);
+        assertEquals(notificationList.get(0).getString("notificationType"), "EARLY");
+        assertEquals(notificationList.get(0).getString("message"), RESOLVED_MESSAGE_EARLY);
+    }
+
+    @Test
     public void threeTotalDays() throws Exception {
         // Missed days 0, 2, and 4.
         user = createAndInitUser();
@@ -599,6 +613,10 @@ public class NotificationTest {
                 .execute().body().getItems();
 
         // Write the engagment report for the user.
+        setStudyCommitment(user);
+    }
+
+    private static void setStudyCommitment(TestUserHelper.TestUser user) throws Exception {
         Map<String, String> reportData = new HashMap<>();
         reportData.put(STUDY_COMMITMENT_SURVEY_QUESTION, STUDY_COMMITMENT_DUMMY_ANSWER);
         ReportData report = new ReportData().localDate(GLOBAL_DATE).data(reportData);
