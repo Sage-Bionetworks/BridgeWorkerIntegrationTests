@@ -33,7 +33,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
@@ -172,7 +171,7 @@ public class WorkerTest {
                 "   \"service\":\"FitBitWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + todaysDate.toString() + "\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"]\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"]\n" +
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
@@ -196,7 +195,7 @@ public class WorkerTest {
     private static Map<String, Integer> countRowsForTables(LocalDate createdDate)
             throws Exception {
         // Query dynamo for all FitBit tables in this study.
-        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", IntegTestUtils.STUDY_ID);
+        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", IntegTestUtils.TEST_APP_ID);
         List<String> tableIdList = new ArrayList<>();
         for (Item oneTableItem : tableItemIter) {
             String tableName = oneTableItem.getString("tableId");
@@ -259,7 +258,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_SIGNUPS\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"],\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
@@ -305,7 +304,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_RETENTION\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.STUDY_ID + "\"],\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +

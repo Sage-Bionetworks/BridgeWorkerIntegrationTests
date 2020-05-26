@@ -32,11 +32,12 @@ import org.testng.annotations.Test;
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.ActivitiesApi;
+import org.sagebionetworks.bridge.rest.api.AppsApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantReportsApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesApi;
-import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.model.Activity;
+import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.IdentifierUpdate;
 import org.sagebionetworks.bridge.rest.model.Phone;
 import org.sagebionetworks.bridge.rest.model.ReportData;
@@ -48,7 +49,6 @@ import org.sagebionetworks.bridge.rest.model.ScheduleType;
 import org.sagebionetworks.bridge.rest.model.ScheduledActivity;
 import org.sagebionetworks.bridge.rest.model.SignUp;
 import org.sagebionetworks.bridge.rest.model.SimpleScheduleStrategy;
-import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.TaskReference;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
@@ -116,7 +116,7 @@ public class NotificationTest {
         researcher = TestUserHelper.createAndSignInUser(NotificationTest.class, false, Role.RESEARCHER);
 
         // Ensure study has all the pre-reqs for our test.
-        Study study = developer.getClient(StudiesApi.class).getUsersStudy().execute().body();
+        App study = developer.getClient(AppsApi.class).getUsersApp().execute().body();
         boolean shouldUpdateStudy = false;
 
         if (!study.getAutomaticCustomEvents().containsKey(TEST_ID)) {
@@ -143,7 +143,7 @@ public class NotificationTest {
         }
 
         if (shouldUpdateStudy) {
-            developer.getClient(StudiesApi.class).updateUsersStudy(study).execute();
+            developer.getClient(AppsApi.class).updateUsersApp(study).execute();
         }
 
         // Make sure we have a schedule for our integ test.
@@ -181,7 +181,7 @@ public class NotificationTest {
                 PREBURST_GROUP_1, ImmutableList.of(MESSAGE_PRE_BURST_1),
                 PREBURST_GROUP_2, ImmutableList.of(MESSAGE_PRE_BURST_2));
 
-        Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.STUDY_ID)
+        Item configItem = new Item().withPrimaryKey("studyId", IntegTestUtils.TEST_APP_ID)
                 .withInt("burstDurationDays", 9)
                 .withString("appUrl", APP_URL)
                 .withStringSet("burstStartEventIdSet", "enrollment", "custom:" + TEST_ID)
@@ -198,7 +198,7 @@ public class NotificationTest {
                 .withInt("numMissedConsecutiveDaysToNotify", 2)
                 .withInt("numMissedDaysToNotify", 3)
                 .withMap("preburstMessagesByDataGroup", preburstMessageMap)
-                .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.STUDY_ID);
+                .withStringSet("requiredSubpopulationGuidSet", IntegTestUtils.TEST_APP_ID);
         ddbNotificationConfigTable.putItem(configItem);
 
         // SQS
@@ -238,7 +238,7 @@ public class NotificationTest {
     @Test
     public void phoneNotVerified() throws Exception {
         // Make an email user, and then add a phone number. (Phone is unverified by default.)
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID)
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID)
                 .email(IntegTestUtils.makeEmail(NotificationTest.class)).password("password1");
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
@@ -254,7 +254,7 @@ public class NotificationTest {
     @Test
     public void notConsented() throws Exception {
         // Make unconsented phone user. Note that unconsented users can't get activities.
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(IntegTestUtils.PHONE).password("password1");
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, false, signUp);
 
         // Run test
@@ -264,7 +264,7 @@ public class NotificationTest {
     @Test
     public void excludedByDataGroup() throws Exception {
         // Create user with an excluded data group
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(IntegTestUtils.PHONE).password("password1");
         signUp.addDataGroupsItem(EXCLUDED_DATA_GROUP);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
@@ -399,7 +399,7 @@ public class NotificationTest {
     @Test
     public void differentPreburstMessageByDataGroup() throws Exception {
         // Create user with preburst group 2.
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(IntegTestUtils.PHONE).password("password1");
         signUp.addDataGroupsItem(PREBURST_GROUP_2);
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
@@ -436,7 +436,7 @@ public class NotificationTest {
     @Test
     public void preburstNoDataGroups() throws Exception {
         // Create user with no pre-burst data groups.
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(IntegTestUtils.PHONE).password("password1");
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(IntegTestUtils.PHONE).password("password1");
         user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         initUser(user);
 
@@ -572,7 +572,7 @@ public class NotificationTest {
                 "   \"service\":\"ActivityNotificationWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + date.toString() + "\",\n" +
-                "       \"studyId\":\"" + IntegTestUtils.STUDY_ID + "\",\n" +
+                "       \"studyId\":\"" + IntegTestUtils.TEST_APP_ID + "\",\n" +
                 "       \"tag\":\"Notification Worker Integ Test " + testName + "\"\n" +
                 "   }\n" +
                 "}";
@@ -599,7 +599,7 @@ public class NotificationTest {
     }
 
     private static TestUserHelper.TestUser createUser(Phone phone) throws Exception {
-        SignUp signUp = new SignUp().study(IntegTestUtils.STUDY_ID).phone(phone).password("password1");
+        SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(phone).password("password1");
         signUp.addDataGroupsItem(PREBURST_GROUP_1);
         TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
                 signUp);
