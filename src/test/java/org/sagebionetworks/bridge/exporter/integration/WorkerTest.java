@@ -253,7 +253,6 @@ public class WorkerTest {
         // Even though the signups report is a "daily" report, we can specify arbitrary start and end times.
         DateTime startDateTime = now.minusHours(1);
         DateTime endDateTime = now.plusHours(1);
-        LOG.info("startDateTime=" + startDateTime + ", endDateTime=" + endDateTime);
         String requestText = "{\n" +
                 "   \"service\":\"REPORTER\",\n" +
                 "   \"body\":{\n" +
@@ -300,7 +299,6 @@ public class WorkerTest {
     public void retentionReporter() throws Exception {
         DateTime startDateTime = now.minusHours(1);
         DateTime endDateTime = now.plusHours(1);
-        LOG.info("startDateTime=" + startDateTime + ", endDateTime=" + endDateTime);
         String requestText = "{\n" +
                 "   \"service\":\"REPORTER\",\n" +
                 "   \"body\":{\n" +
