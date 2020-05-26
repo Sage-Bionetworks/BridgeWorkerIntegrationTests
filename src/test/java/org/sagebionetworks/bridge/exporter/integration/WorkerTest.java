@@ -5,9 +5,6 @@ import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,15 +16,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.regions.Regions;
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder;
 import com.amazonaws.services.dynamodbv2.document.AttributeUpdate;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
-import com.amazonaws.services.sqs.AmazonSQSClient;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -44,40 +36,24 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
-import org.sagebionetworks.bridge.config.Environment;
-import org.sagebionetworks.bridge.config.PropertiesConfig;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.HealthDataApi;
 import org.sagebionetworks.bridge.rest.api.StudyReportsApi;
-import org.sagebionetworks.bridge.rest.api.UploadSchemasApi;
-import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
-import org.sagebionetworks.bridge.rest.model.ClientInfo;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecord;
 import org.sagebionetworks.bridge.rest.model.HealthDataSubmission;
 import org.sagebionetworks.bridge.rest.model.ReportData;
 import org.sagebionetworks.bridge.rest.model.Role;
-import org.sagebionetworks.bridge.rest.model.UploadFieldDefinition;
-import org.sagebionetworks.bridge.rest.model.UploadFieldType;
-import org.sagebionetworks.bridge.rest.model.UploadSchema;
-import org.sagebionetworks.bridge.rest.model.UploadSchemaType;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUserHelper;
+import org.sagebionetworks.bridge.util.IntegTestUtils;
 
 @SuppressWarnings("unchecked")
 public class WorkerTest {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerTest.class);
 
-    private static final String LARGE_TEXT_ATTACHMENT_FIELD_NAME = "my-large-text-attachment";
-    private static final String LARGE_TEXT_ATTACHMENT_SCHEMA_ID = "large-text-attachment-test";
-    private static final long LARGE_TEXT_ATTACHMENT_SCHEMA_REV = 1;
     private static final String PHONE_INFO = "BridgeWorkerIntegTest";
     private static final int POLL_INTERVAL_SECONDS = 5;
     private static final int POLL_MAX_ITERATIONS = 6;
-    private static final String TEST_STUDY_ID = "api";
-
-    private static final String CONFIG_FILE = "BridgeWorker-test.conf";
-    private static final String DEFAULT_CONFIG_FILE = CONFIG_FILE;
-    private static final String USER_CONFIG_FILE = System.getProperty("user.home") + "/" + CONFIG_FILE;
 
     // DailyActivitySummary.activities generally gets no data, and our integ test apps don't have permissions for
     // HeartRate.activities-heart-intraday.
@@ -103,49 +79,22 @@ public class WorkerTest {
     // using @BeforeClass, which unfortunately prevents us from using Spring.
     @BeforeClass
     public static void beforeClass() throws Exception {
-        // Set TestUserHelper client info
-        ClientInfo clientInfo = TestUserHelper.getClientInfo();
-        clientInfo.setAppName("Worker Integ Tests");
-        clientInfo.setAppVersion(1);
-
-        // bridge config
-        //noinspection ConstantConditions
-        String defaultConfig = WorkerTest.class.getClassLoader().getResource(DEFAULT_CONFIG_FILE).getPath();
-        Path defaultConfigPath = Paths.get(defaultConfig);
-        Path localConfigPath = Paths.get(USER_CONFIG_FILE);
-
-        Config bridgeConfig;
-        if (Files.exists(localConfigPath)) {
-            bridgeConfig = new PropertiesConfig(defaultConfigPath, localConfigPath);
-        } else {
-            bridgeConfig = new PropertiesConfig(defaultConfigPath);
-        }
-
         // config vars
-        Environment env = bridgeConfig.getEnvironment();
+        Config bridgeConfig = TestUtils.loadConfig();
         workerSqsUrl = bridgeConfig.get("worker.request.sqs.queue.url");
-        String synapseUser = bridgeConfig.get("synapse.user");
-        String synapseApiKey = bridgeConfig.get("synapse.api.key");
 
         // AWS services
-        BasicAWSCredentials awsCredentials = new BasicAWSCredentials(bridgeConfig.get("aws.key"),
-                bridgeConfig.get("aws.secret.key"));
-        AWSCredentialsProvider awsCredentialsProvider = new AWSStaticCredentialsProvider(awsCredentials);
-
-        sqsHelper = new SqsHelper();
-        //noinspection deprecation
-        sqsHelper.setSqsClient(new AmazonSQSClient(awsCredentials));
+        AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(bridgeConfig);
+        sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
 
         // DDB tables
-        DynamoDB ddbClient = new DynamoDB(AmazonDynamoDBClientBuilder.standard()
-                .withRegion(Regions.US_EAST_1)
-                .withCredentials(awsCredentialsProvider).build());
-        String ddbBridgePrefix = env.name().toLowerCase() + '-' + bridgeConfig.getUser() + '-';
-
-        ddbFitBitTables = ddbClient.getTable(ddbBridgePrefix + "FitBitTables");
-        Table ddbRecordTable = ddbClient.getTable(ddbBridgePrefix + "HealthDataRecord3");
+        DynamoDB ddbClient = TestUtils.getDdbClient(awsCredentialsProvider);
+        ddbFitBitTables = TestUtils.getDdbTable(bridgeConfig, ddbClient, "FitBitTables");
+        Table ddbRecordTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "HealthDataRecord3");
 
         // Synapse clients
+        String synapseUser = bridgeConfig.get("synapse.user");
+        String synapseApiKey = bridgeConfig.get("synapse.api.key");
         synapseClient = new SynapseClientImpl();
         synapseClient.setUsername(synapseUser);
         synapseClient.setApiKey(synapseApiKey);
@@ -158,24 +107,7 @@ public class WorkerTest {
         user = TestUserHelper.createAndSignInUser(WorkerTest.class, true);
 
         // ensure schemas exist, so we have something to upload against
-        UploadSchemasApi uploadSchemasApi = developer.getClient(UploadSchemasApi.class);
-
-        // large-text-attachment-test schema
-        UploadSchema largeTextAttachmentTestSchema = null;
-        try {
-            largeTextAttachmentTestSchema = uploadSchemasApi.getMostRecentUploadSchema(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                    .execute().body();
-        } catch (EntityNotFoundException ex) {
-            // no-op
-        }
-        if (largeTextAttachmentTestSchema == null) {
-            UploadFieldDefinition largeTextFieldDef = new UploadFieldDefinition()
-                    .name(LARGE_TEXT_ATTACHMENT_FIELD_NAME).type(UploadFieldType.LARGE_TEXT_ATTACHMENT);
-            largeTextAttachmentTestSchema = new UploadSchema().schemaId(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                    .revision(LARGE_TEXT_ATTACHMENT_SCHEMA_REV).name("Large Text Attachment Test")
-                    .schemaType(UploadSchemaType.IOS_DATA).addFieldDefinitionsItem(largeTextFieldDef);
-            uploadSchemasApi.createUploadSchema(largeTextAttachmentTestSchema).execute();
-        }
+        TestUtils.ensureSchemas(developer);
 
         // Take a snapshot of "now" so we don't get weird clock drift while the test is running.
         now = DateTime.now();
@@ -190,11 +122,11 @@ public class WorkerTest {
 
         // Submit health data - Note that we build maps, since Jackson and GSON don't mix very well.
         Map<String, String> dataMap = new HashMap<>();
-        dataMap.put(LARGE_TEXT_ATTACHMENT_FIELD_NAME, "This is my large text attachment");
+        dataMap.put(TestUtils.LARGE_TEXT_ATTACHMENT_FIELD_NAME, "This is my large text attachment");
 
         HealthDataSubmission submission = new HealthDataSubmission().appVersion("integTestRunId " + integTestRunId)
-                .createdOn(uploadDateTime).phoneInfo(PHONE_INFO).schemaId(LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
-                .schemaRevision(LARGE_TEXT_ATTACHMENT_SCHEMA_REV).data(dataMap);
+                .createdOn(uploadDateTime).phoneInfo(PHONE_INFO).schemaId(TestUtils.LARGE_TEXT_ATTACHMENT_SCHEMA_ID)
+                .schemaRevision(TestUtils.LARGE_TEXT_ATTACHMENT_SCHEMA_REV).data(dataMap);
 
         HealthDataApi healthDataApi = user.getClient(HealthDataApi.class);
         HealthDataRecord record = healthDataApi.submitHealthData(submission).execute().body();
@@ -239,7 +171,7 @@ public class WorkerTest {
                 "   \"service\":\"FitBitWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + todaysDate.toString() + "\",\n" +
-                "       \"studyWhitelist\":[\"" + TEST_STUDY_ID + "\"]\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"]\n" +
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
@@ -263,7 +195,7 @@ public class WorkerTest {
     private static Map<String, Integer> countRowsForTables(LocalDate createdDate)
             throws Exception {
         // Query dynamo for all FitBit tables in this study.
-        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", TEST_STUDY_ID);
+        Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", IntegTestUtils.TEST_APP_ID);
         List<String> tableIdList = new ArrayList<>();
         for (Item oneTableItem : tableItemIter) {
             String tableName = oneTableItem.getString("tableId");
@@ -326,7 +258,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_SIGNUPS\",\n" +
-                "       \"studyWhitelist\":[\"" + TEST_STUDY_ID + "\"],\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
@@ -351,15 +283,59 @@ public class WorkerTest {
         assertNotNull(reportDataList);
         assertFalse(reportDataList.isEmpty());
 
-        // We should have at least one report with at least 2 users.
+        // We should have at least one report with at least 1 user with no admin access.
         assertEquals(reportDataList.size(), 1);
         ReportData reportData = reportDataList.get(0);
         assertEquals(reportData.getLocalDate(), reportDate);
 
         // For whatever reason, Bridge is returning this as a Double rather than an Int. To avoid dealing with double
-        // rounding errors, we expect at least 2 users, but we'll check for > 1.9.
+        // rounding errors, we expect at least 2 users, but we'll check for > 0.9.
         Map<String, Map<String, Double>> reportMap = (Map<String, Map<String, Double>>)reportData.getData();
         Map<String, Double> reportByStatus = reportMap.get("byStatus");
-        assertTrue(reportByStatus.get("enabled") > 1.9);
+        assertTrue(reportByStatus.get("enabled") > 0.9);
+    }
+    
+    @Test
+    public void retentionReporter() throws Exception {
+        DateTime startDateTime = now.minusMinutes(10);
+        DateTime endDateTime = now.plusMinutes(10);
+        String requestText = "{\n" +
+                "   \"service\":\"REPORTER\",\n" +
+                "   \"body\":{\n" +
+                "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
+                "       \"scheduleType\":\"DAILY_RETENTION\",\n" +
+                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
+                "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
+                "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
+                "   }\n" +
+                "}";
+        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
+        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
+
+        // Verify. Poll report until we get the result or we hit max iterations.
+        StudyReportsApi reportsApi = developer.getClient(StudyReportsApi.class);
+        String reportId = "-daily-retention-report";
+        LocalDate reportDate = startDateTime.toLocalDate();
+        List<ReportData> reportDataList = null;
+        for (int i = 0; i < POLL_MAX_ITERATIONS; i++) {
+            TimeUnit.SECONDS.sleep(POLL_INTERVAL_SECONDS);
+
+            reportDataList = reportsApi.getStudyReportRecords(reportId, reportDate, reportDate).execute().body()
+                    .getItems();
+            if (!reportDataList.isEmpty()) {
+                break;
+            }
+        }
+        assertNotNull(reportDataList);
+        assertFalse(reportDataList.isEmpty());
+
+        // We should have at least one report with at least 1 user without admin access.
+        assertEquals(reportDataList.size(), 1);
+        ReportData reportData = reportDataList.get(0);
+        assertEquals(reportData.getLocalDate(), reportDate);
+
+        Map<String, List<Double>> reportMap = (Map<String, List<Double>>) reportData.getData();
+        List<Double> reportBySignIn = reportMap.get("bySignIn");
+        assertTrue(reportBySignIn.get(0) > 0.9);
     }
 }
