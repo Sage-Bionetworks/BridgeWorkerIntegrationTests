@@ -251,8 +251,8 @@ public class WorkerTest {
         // Use signups report, since it's easier to create signups than uploads.
         // Start and end times should be 10 min before/after "now", to account for clock skew.
         // Even though the signups report is a "daily" report, we can specify arbitrary start and end times.
-        DateTime startDateTime = now.minusMinutes(10);
-        DateTime endDateTime = now.plusMinutes(10);
+        DateTime startDateTime = now.minusHours(1);
+        DateTime endDateTime = now.plusHours(1);
         String requestText = "{\n" +
                 "   \"service\":\"REPORTER\",\n" +
                 "   \"body\":{\n" +
@@ -297,8 +297,8 @@ public class WorkerTest {
     
     @Test
     public void retentionReporter() throws Exception {
-        DateTime startDateTime = now.minusMinutes(10);
-        DateTime endDateTime = now.plusMinutes(10);
+        DateTime startDateTime = now.minusHours(1);
+        DateTime endDateTime = now.plusHours(1);
         String requestText = "{\n" +
                 "   \"service\":\"REPORTER\",\n" +
                 "   \"body\":{\n" +
@@ -314,6 +314,9 @@ public class WorkerTest {
 
         // Verify. Poll report until we get the result or we hit max iterations.
         StudyReportsApi reportsApi = developer.getClient(StudyReportsApi.class);
+        // For some reason, the report is not written this way, it's written only using
+        // the suffix. This is a bug.
+        // String reportId = "reporter-test-" + integTestRunId + "-daily-retention-report";
         String reportId = "-daily-retention-report";
         LocalDate reportDate = startDateTime.toLocalDate();
         List<ReportData> reportDataList = null;
