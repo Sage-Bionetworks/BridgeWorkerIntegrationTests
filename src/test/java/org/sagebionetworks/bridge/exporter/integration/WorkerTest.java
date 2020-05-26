@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.regions.Regions;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder;
 import com.amazonaws.services.dynamodbv2.document.AttributeUpdate;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
@@ -137,6 +138,7 @@ public class WorkerTest {
 
         // DDB tables
         DynamoDB ddbClient = new DynamoDB(AmazonDynamoDBClientBuilder.standard()
+                .withRegion(Regions.US_EAST_1)
                 .withCredentials(awsCredentialsProvider).build());
         String ddbBridgePrefix = env.name().toLowerCase() + '-' + bridgeConfig.getUser() + '-';
 
@@ -152,9 +154,8 @@ public class WorkerTest {
         executorService = Executors.newCachedThreadPool();
 
         // Bridge clients
-        developer = TestUserHelper.createAndSignInUser(WorkerTest.class, TEST_STUDY_ID, false,
-                Role.DEVELOPER);
-        user = TestUserHelper.createAndSignInUser(WorkerTest.class, TEST_STUDY_ID, true);
+        developer = TestUserHelper.createAndSignInUser(WorkerTest.class, false, Role.DEVELOPER);
+        user = TestUserHelper.createAndSignInUser(WorkerTest.class, true);
 
         // ensure schemas exist, so we have something to upload against
         UploadSchemasApi uploadSchemasApi = developer.getClient(UploadSchemasApi.class);
