@@ -115,35 +115,35 @@ public class NotificationTest {
         developer = TestUserHelper.createAndSignInUser(NotificationTest.class, false, Role.DEVELOPER);
         researcher = TestUserHelper.createAndSignInUser(NotificationTest.class, false, Role.RESEARCHER);
 
-        // Ensure study has all the pre-reqs for our test.
-        App study = developer.getClient(AppsApi.class).getUsersApp().execute().body();
-        boolean shouldUpdateStudy = false;
+        // Ensure app has all the pre-reqs for our test.
+        App app = developer.getClient(AppsApi.class).getUsersApp().execute().body();
+        boolean shouldUpdateApp = false;
 
-        if (!study.getAutomaticCustomEvents().containsKey(TEST_ID)) {
-            study.putAutomaticCustomEventsItem(TEST_ID, "enrollment:P2W");
-            shouldUpdateStudy = true;
-        }
-
-        if (!study.getDataGroups().contains(EXCLUDED_DATA_GROUP)) {
-            study.addDataGroupsItem(EXCLUDED_DATA_GROUP);
-            shouldUpdateStudy = true;
-        }
-        if (!study.getDataGroups().contains(PREBURST_GROUP_1)) {
-            study.addDataGroupsItem(PREBURST_GROUP_1);
-            shouldUpdateStudy = true;
-        }
-        if (!study.getDataGroups().contains(PREBURST_GROUP_2)) {
-            study.addDataGroupsItem(PREBURST_GROUP_2);
-            shouldUpdateStudy = true;
+        if (!app.getAutomaticCustomEvents().containsKey(TEST_ID)) {
+            app.putAutomaticCustomEventsItem(TEST_ID, "enrollment:P2W");
+            shouldUpdateApp = true;
         }
 
-        if (!study.getTaskIdentifiers().contains(TEST_ID)) {
-            study.addTaskIdentifiersItem(TEST_ID);
-            shouldUpdateStudy = true;
+        if (!app.getDataGroups().contains(EXCLUDED_DATA_GROUP)) {
+            app.addDataGroupsItem(EXCLUDED_DATA_GROUP);
+            shouldUpdateApp = true;
+        }
+        if (!app.getDataGroups().contains(PREBURST_GROUP_1)) {
+            app.addDataGroupsItem(PREBURST_GROUP_1);
+            shouldUpdateApp = true;
+        }
+        if (!app.getDataGroups().contains(PREBURST_GROUP_2)) {
+            app.addDataGroupsItem(PREBURST_GROUP_2);
+            shouldUpdateApp = true;
         }
 
-        if (shouldUpdateStudy) {
-            developer.getClient(AppsApi.class).updateUsersApp(study).execute();
+        if (!app.getTaskIdentifiers().contains(TEST_ID)) {
+            app.addTaskIdentifiersItem(TEST_ID);
+            shouldUpdateApp = true;
+        }
+
+        if (shouldUpdateApp) {
+            developer.getClient(AppsApi.class).updateUsersApp(app).execute();
         }
 
         // Make sure we have a schedule for our integ test.
@@ -572,7 +572,7 @@ public class NotificationTest {
                 "   \"service\":\"ActivityNotificationWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + date.toString() + "\",\n" +
-                "       \"studyId\":\"" + IntegTestUtils.TEST_APP_ID + "\",\n" +
+                "       \"appId\":\"" + IntegTestUtils.TEST_APP_ID + "\",\n" +
                 "       \"tag\":\"Notification Worker Integ Test " + testName + "\"\n" +
                 "   }\n" +
                 "}";
