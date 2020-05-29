@@ -158,7 +158,7 @@ public class WorkerTest {
     // and password are the same for both Bridge and FitBit.
     //
     // This has already been configured for dev, uat, and prod. You may need to configure it on your own in the local
-    // study.
+    // app.
     @Test
     public void fitbitWorker() throws Exception {
         LocalDate todaysDate = now.toLocalDate();
@@ -171,7 +171,7 @@ public class WorkerTest {
                 "   \"service\":\"FitBitWorker\",\n" +
                 "   \"body\":{\n" +
                 "       \"date\":\"" + todaysDate.toString() + "\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"]\n" +
+                "       \"appWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"]\n" +
                 "   }\n" +
                 "}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
@@ -194,7 +194,7 @@ public class WorkerTest {
 
     private static Map<String, Integer> countRowsForTables(LocalDate createdDate)
             throws Exception {
-        // Query dynamo for all FitBit tables in this study.
+        // Query dynamo for all FitBit tables in this app.
         Iterable<Item> tableItemIter = ddbFitBitTables.query("studyId", IntegTestUtils.TEST_APP_ID);
         List<String> tableIdList = new ArrayList<>();
         for (Item oneTableItem : tableItemIter) {
@@ -258,7 +258,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_SIGNUPS\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
+                "       \"appWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
@@ -304,7 +304,7 @@ public class WorkerTest {
                 "   \"body\":{\n" +
                 "       \"scheduler\":\"reporter-test-" + integTestRunId + "\",\n" +
                 "       \"scheduleType\":\"DAILY_RETENTION\",\n" +
-                "       \"studyWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
+                "       \"appWhitelist\":[\"" + IntegTestUtils.TEST_APP_ID + "\"],\n" +
                 "       \"startDateTime\":\"" + startDateTime.toString() + "\",\n" +
                 "       \"endDateTime\":\"" + endDateTime.toString() + "\"\n" +
                 "   }\n" +
