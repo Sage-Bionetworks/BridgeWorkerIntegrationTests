@@ -20,6 +20,7 @@ import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.amazonaws.services.sqs.AmazonSQSClient;
+import org.joda.time.DateTimeZone;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.config.PropertiesConfig;
@@ -42,6 +43,7 @@ public class TestUtils {
     public static final String LARGE_TEXT_ATTACHMENT_FIELD_NAME = "my-large-text-attachment";
     public static final String LARGE_TEXT_ATTACHMENT_SCHEMA_ID = "large-text-attachment-test";
     public static final long LARGE_TEXT_ATTACHMENT_SCHEMA_REV = 1;
+    public static final DateTimeZone LOCAL_TIME_ZONE = DateTimeZone.forID("America/Los_Angeles");
     private static final int MAX_POLL_ITERATIONS = 6;
     private static final long POLL_DELAY_MILLIS = 5000;
 
