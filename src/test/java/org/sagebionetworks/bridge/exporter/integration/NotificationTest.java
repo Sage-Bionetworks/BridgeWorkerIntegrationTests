@@ -33,9 +33,9 @@ import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.ActivitiesApi;
 import org.sagebionetworks.bridge.rest.api.AppsApi;
+import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantReportsApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
-import org.sagebionetworks.bridge.rest.api.SchedulesApi;
 import org.sagebionetworks.bridge.rest.model.Activity;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.IdentifierUpdate;
@@ -147,7 +147,7 @@ public class NotificationTest {
         }
 
         // Make sure we have a schedule for our integ test.
-        List<SchedulePlan> schedulePlanList = developer.getClient(SchedulesApi.class).getSchedulePlans(false).execute()
+        List<SchedulePlan> schedulePlanList = developer.getClient(ForDevelopersApi.class).getSchedulePlans(false).execute()
                 .body().getItems();
         Optional<SchedulePlan> optionalSchedulePlan = schedulePlanList.stream()
                 .filter(s -> TEST_ID.equals(s.getLabel())).findAny();
@@ -159,7 +159,7 @@ public class NotificationTest {
                     .addTimesItem("00:00").addActivitiesItem(activity);
             ScheduleStrategy strategy = new SimpleScheduleStrategy().schedule(schedule).type("SimpleScheduleStrategy");
             SchedulePlan newPlan = new SchedulePlan().label(TEST_ID).strategy(strategy);
-            developer.getClient(SchedulesApi.class).createSchedulePlan(newPlan).execute();
+            developer.getClient(ForDevelopersApi.class).createSchedulePlan(newPlan).execute();
         }
 
         // AWS
