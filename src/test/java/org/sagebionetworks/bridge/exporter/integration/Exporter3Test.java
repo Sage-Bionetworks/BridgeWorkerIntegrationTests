@@ -2,12 +2,15 @@ package org.sagebionetworks.bridge.exporter.integration;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.fail;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
@@ -29,8 +32,12 @@ import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
 import org.sagebionetworks.repo.model.sts.StsPermission;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterClass;
+import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
@@ -41,10 +48,13 @@ import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
 import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
+import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.Role;
+import org.sagebionetworks.bridge.rest.model.SharingScope;
+import org.sagebionetworks.bridge.rest.model.StudyParticipant;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.s3.S3Helper;
@@ -53,6 +63,8 @@ import org.sagebionetworks.bridge.util.IntegTestUtils;
 
 @SuppressWarnings({ "ConstantConditions", "deprecation", "OptionalGetWithoutIsPresent" })
 public class Exporter3Test {
+    private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
+
     private static final String CONFIG_KEY_RAW_DATA_BUCKET = "health.data.bucket.raw";
     private static final String CONFIG_KEY_SYNAPSE_API_KEY = "synapse.api.key";
     private static final String CONFIG_KEY_SYNAPSE_USER = "synapse.user";
@@ -66,7 +78,8 @@ public class Exporter3Test {
     private static Exporter3Configuration ex3Config;
     private static String rawDataBucket;
     private static SynapseClient synapseClient;
-    private static TestUserHelper.TestUser user;
+
+    private TestUserHelper.TestUser user;
 
     @BeforeClass
     public static void beforeClass() throws Exception {
@@ -86,28 +99,99 @@ public class Exporter3Test {
                 Role.DEVELOPER, Role.WORKER);
 
         // Wipe the Exporter 3 Config and re-create it.
-        ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
-
-        // Reset the Exporter 3 Config.
-        App app = adminsApi.getUsersApp().execute().body();
-        app.setExporter3Configuration(null);
-        app.setExporter3Enabled(false);
-        adminsApi.updateUsersApp(app).execute();
+        deleteEx3Resources();
 
         // Init Exporter 3.
+        ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
         ex3Config = adminsApi.initExporter3().execute().body();
+    }
 
-        // Create user.
+    @BeforeMethod
+    public void before() throws Exception {
         user = TestUserHelper.createAndSignInUser(Exporter3Test.class, true);
+    }
+
+    @AfterMethod
+    public void after() throws Exception {
+        if (user != null) {
+            user.signOutAndDeleteUser();
+        }
     }
 
     @AfterClass
     public static void afterClass() throws Exception {
-        if (user != null) {
-            user.signOutAndDeleteUser();
-        }
+        // Clean up Synapse resources.
+        deleteEx3Resources();
+
         if (adminDeveloperWorker != null) {
             adminDeveloperWorker.signOutAndDeleteUser();
+        }
+    }
+
+    private static void deleteEx3Resources() throws IOException {
+        ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
+        App app = adminsApi.getUsersApp().execute().body();
+        Exporter3Configuration ex3Config = app.getExporter3Configuration();
+        if (ex3Config == null) {
+            // Exporter 3 is not configured on this app. We can skip this step.
+            return;
+        }
+
+        // Delete the project. This automatically deletes the folder too.
+        String projectId = ex3Config.getProjectId();
+        if (projectId != null) {
+            try {
+                synapseClient.deleteEntityById(projectId, true);
+            } catch (SynapseException ex) {
+                LOG.error("Error deleting project " + projectId, ex);
+            }
+        }
+
+        // Delete the data access team.
+        Long dataAccessTeamId = ex3Config.getDataAccessTeamId();
+        if (dataAccessTeamId != null) {
+            try {
+                synapseClient.deleteTeam(String.valueOf(dataAccessTeamId));
+            } catch (SynapseException ex) {
+                LOG.error("Error deleting team " + dataAccessTeamId, ex);
+            }
+        }
+
+        // Storage locations are idempotent, so no need to delete that.
+
+        // Reset the Exporter 3 Config.
+        app.setExporter3Configuration(null);
+        app.setExporter3Enabled(false);
+        adminsApi.updateUsersApp(app).execute();
+    }
+
+    // Note: There are other test cases, for example, if the participant uploads and then turns off sharing before the
+    // upload is exported. This might happen if Synapse is down for maintenance, or in the case of a redrive. However,
+    // the first scenario is impractical to test in an integration test, and the second scenario depends on a feature
+    // that's not yet implemented (redrives). For now, we only have this one test.
+    @Test
+    public void noSharing() throws Exception {
+        // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. No need to
+        // change the participant here.
+
+        // Upload file to Bridge.
+        UploadInfo uploadInfo = uploadFile(UPLOAD_CONTENT, false);
+        String filename = uploadInfo.filename;
+        String uploadId = uploadInfo.uploadId;
+
+        // Verify upload is NOT exported to Synapse.
+        String rawFolderId = ex3Config.getRawDataFolderId();
+        String todaysDateString = LocalDate.now(TestUtils.LOCAL_TIME_ZONE).toString();
+        String exportedFilename = uploadId + '-' + filename;
+
+        // Depending on the order that TestNG runs the tests, we'll either throw getting the folder or we'll throw
+        // getting the child inside the folder.
+        try {
+            String todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString, EntityType.folder);
+            getSynapseChildByName(todayFolderId, exportedFilename, EntityType.file);
+            fail("expected exception");
+        } catch (NoSuchElementException ex) {
+            // expected exception
         }
     }
 
@@ -129,25 +213,17 @@ public class Exporter3Test {
     }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
-        // Create a temp file so that we can use RestUtils.
-        File file = File.createTempFile("text", ".txt");
-        String filename = file.getName();
-        Files.write(content, file);
+        // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
+        // so that the test can succeed.
+        ParticipantsApi participantsApi = user.getClient(ParticipantsApi.class);
+        StudyParticipant participant = participantsApi.getUsersParticipantRecord(false).execute().body();
+        participant.setSharingScope(SharingScope.ALL_QUALIFIED_RESEARCHERS);
+        participantsApi.updateUsersParticipantRecord(participant).execute();
 
-        // Create upload request. We want to add custom metadata. Also, RestUtils defaults to application/zip. We want
-        // to overwrite this.
-        UploadRequest uploadRequest = RestUtils.makeUploadRequestForFile(file);
-        uploadRequest.setContentType(CONTENT_TYPE_TEXT_PLAIN);
-        uploadRequest.putMetadataItem(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE);
-        uploadRequest.setEncrypted(encrypted);
-        uploadRequest.setZipped(false);
-
-        // Upload.
-        ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
-        UploadSession session = usersApi.requestUploadSession(uploadRequest).execute().body();
-        String uploadId = session.getId();
-        RestUtils.uploadToS3(file, session.getUrl(), CONTENT_TYPE_TEXT_PLAIN);
-        usersApi.completeUploadSession(session.getId(), true, false).execute();
+        // Upload file to Bridge.
+        UploadInfo uploadInfo = uploadFile(content, encrypted);
+        String filename = uploadInfo.filename;
+        String uploadId = uploadInfo.uploadId;
 
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
@@ -196,6 +272,41 @@ public class Exporter3Test {
         // let's say, 1 hour.
         DateTime oneHourAgo = DateTime.now().minusHours(1);
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+    }
+
+    private static class UploadInfo {
+        String filename;
+        String uploadId;
+    }
+
+    private UploadInfo uploadFile(byte[] content, boolean encrypted) throws InterruptedException, IOException {
+        // Create a temp file so that we can use RestUtils.
+        File file = File.createTempFile("text", ".txt");
+        String filename = file.getName();
+        Files.write(content, file);
+
+        // Create upload request. We want to add custom metadata. Also, RestUtils defaults to application/zip. We want
+        // to overwrite this.
+        UploadRequest uploadRequest = RestUtils.makeUploadRequestForFile(file);
+        uploadRequest.setContentType(CONTENT_TYPE_TEXT_PLAIN);
+        uploadRequest.putMetadataItem(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE);
+        uploadRequest.setEncrypted(encrypted);
+        uploadRequest.setZipped(false);
+
+        // Upload.
+        ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
+        UploadSession session = usersApi.requestUploadSession(uploadRequest).execute().body();
+        String uploadId = session.getId();
+        RestUtils.uploadToS3(file, session.getUrl(), CONTENT_TYPE_TEXT_PLAIN);
+        usersApi.completeUploadSession(session.getId(), true, false).execute();
+
+        // Sleep for a bit to give the Worker Exporter time to finish.
+        Thread.sleep(2000);
+
+        UploadInfo uploadInfo = new UploadInfo();
+        uploadInfo.filename = filename;
+        uploadInfo.uploadId = uploadId;
+        return uploadInfo;
     }
 
     private String getSynapseChildByName(String parentId, String childName, EntityType type) throws SynapseException {
