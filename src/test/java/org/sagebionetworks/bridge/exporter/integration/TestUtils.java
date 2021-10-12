@@ -21,6 +21,8 @@ import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.amazonaws.services.sqs.AmazonSQSClient;
 import org.joda.time.DateTimeZone;
+import org.sagebionetworks.client.SynapseClient;
+import org.sagebionetworks.client.SynapseClientImpl;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.config.PropertiesConfig;
@@ -116,6 +118,20 @@ public class TestUtils {
         //noinspection deprecation
         sqsHelper.setSqsClient(new AmazonSQSClient(awsCredentialsProvider));
         return sqsHelper;
+    }
+
+    public static SynapseClient getSynapseClient(Config config) {
+        SynapseClient synapseClient = new SynapseClientImpl();
+        synapseClient.setUsername(config.get("synapse.user"));
+        synapseClient.setApiKey(config.get("synapse.api.key"));
+
+        // Based on config, we either talk to Synapse Dev (local/dev/staging) or Synapse Prod.
+        String synapseEndpoint = config.get("synapse.endpoint");
+        synapseClient.setAuthEndpoint(synapseEndpoint + "auth/v1");
+        synapseClient.setFileEndpoint(synapseEndpoint + "file/v1");
+        synapseClient.setRepositoryEndpoint(synapseEndpoint + "repo/v1");
+
+        return synapseClient;
     }
 
     public static UploadValidationStatus upload(TestUserHelper.TestUser user) throws IOException {
