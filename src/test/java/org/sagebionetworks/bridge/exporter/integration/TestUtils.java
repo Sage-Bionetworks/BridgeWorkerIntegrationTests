@@ -53,7 +53,13 @@ public class TestUtils {
     private static final String DEFAULT_CONFIG_FILE = CONFIG_FILE;
     private static final String USER_CONFIG_FILE = System.getProperty("user.home") + "/" + CONFIG_FILE;
 
+    private static Config bridgeConfig;
+
     public static Config loadConfig() throws IOException {
+        if (bridgeConfig != null) {
+            return bridgeConfig;
+        }
+
         // Set TestUserHelper client info
         ClientInfo clientInfo = TestUserHelper.getClientInfo();
         clientInfo.setAppName("Worker Integ Tests");
@@ -65,7 +71,6 @@ public class TestUtils {
         Path defaultConfigPath = Paths.get(defaultConfig);
         Path localConfigPath = Paths.get(USER_CONFIG_FILE);
 
-        Config bridgeConfig;
         if (Files.exists(localConfigPath)) {
             bridgeConfig = new PropertiesConfig(defaultConfigPath, localConfigPath);
         } else {
