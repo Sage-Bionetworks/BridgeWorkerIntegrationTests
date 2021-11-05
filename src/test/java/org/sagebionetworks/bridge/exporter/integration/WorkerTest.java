@@ -26,7 +26,6 @@ import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.sagebionetworks.client.SynapseClient;
-import org.sagebionetworks.client.SynapseClientImpl;
 import org.sagebionetworks.client.exceptions.SynapseResultNotReadyException;
 import org.sagebionetworks.repo.model.table.QueryResultBundle;
 import org.slf4j.Logger;
@@ -93,11 +92,7 @@ public class WorkerTest {
         Table ddbRecordTable = TestUtils.getDdbTable(bridgeConfig, ddbClient, "HealthDataRecord3");
 
         // Synapse clients
-        String synapseUser = bridgeConfig.get("synapse.user");
-        String synapseApiKey = bridgeConfig.get("synapse.api.key");
-        synapseClient = new SynapseClientImpl();
-        synapseClient.setUsername(synapseUser);
-        synapseClient.setApiKey(synapseApiKey);
+        synapseClient = TestUtils.getSynapseClient(bridgeConfig);
 
         // instantiate executor
         executorService = Executors.newCachedThreadPool();
@@ -159,6 +154,9 @@ public class WorkerTest {
     //
     // This has already been configured for dev, uat, and prod. You may need to configure it on your own in the local
     // app.
+    //
+    // TODO FitBit is in fact NOT configured for dev and uat, and this test apparently doesn't error out in this case.
+    // See https://sagebionetworks.jira.com/browse/BRIDGE-3104
     @Test
     public void fitbitWorker() throws Exception {
         LocalDate todaysDate = now.toLocalDate();

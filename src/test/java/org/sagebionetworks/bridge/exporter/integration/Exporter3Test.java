@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
-import org.sagebionetworks.client.SynapseAdminClientImpl;
 import org.sagebionetworks.client.SynapseClient;
 import org.sagebionetworks.client.SynapseStsCredentialsProvider;
 import org.sagebionetworks.client.exceptions.SynapseException;
@@ -66,8 +65,6 @@ public class Exporter3Test {
     private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
 
     private static final String CONFIG_KEY_RAW_DATA_BUCKET = "health.data.bucket.raw";
-    private static final String CONFIG_KEY_SYNAPSE_API_KEY = "synapse.api.key";
-    private static final String CONFIG_KEY_SYNAPSE_USER = "synapse.user";
     private static final String CONTENT_TYPE_TEXT_PLAIN = "text/plain";
     private static final String CUSTOM_METADATA_KEY = "custom-metadata-key";
     private static final String CUSTOM_METADATA_KEY_SANITIZED = "custom_metadata_key";
@@ -87,12 +84,7 @@ public class Exporter3Test {
         rawDataBucket = config.get(CONFIG_KEY_RAW_DATA_BUCKET);
 
         // Set up SynapseClient.
-        String synapseUserName = config.get(CONFIG_KEY_SYNAPSE_USER);
-        String synapseApiKey = config.get(CONFIG_KEY_SYNAPSE_API_KEY);
-
-        synapseClient = new SynapseAdminClientImpl();
-        synapseClient.setUsername(synapseUserName);
-        synapseClient.setApiKey(synapseApiKey);
+        synapseClient = TestUtils.getSynapseClient(config);
 
         // Create admin account.
         adminDeveloperWorker = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.ADMIN,
