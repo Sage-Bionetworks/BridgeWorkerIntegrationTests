@@ -1,6 +1,7 @@
 package org.sagebionetworks.bridge.exporter.integration;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
@@ -9,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
@@ -23,6 +25,7 @@ import org.joda.time.LocalDate;
 import org.sagebionetworks.client.SynapseClient;
 import org.sagebionetworks.client.SynapseStsCredentialsProvider;
 import org.sagebionetworks.client.exceptions.SynapseException;
+import org.sagebionetworks.client.exceptions.SynapseResultNotReadyException;
 import org.sagebionetworks.repo.model.EntityChildrenRequest;
 import org.sagebionetworks.repo.model.EntityChildrenResponse;
 import org.sagebionetworks.repo.model.EntityHeader;
@@ -31,6 +34,9 @@ import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
 import org.sagebionetworks.repo.model.sts.StsPermission;
+import org.sagebionetworks.repo.model.table.QueryResultBundle;
+import org.sagebionetworks.repo.model.table.RowSet;
+import org.sagebionetworks.repo.model.table.SelectColumn;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterClass;
@@ -233,7 +239,13 @@ public class Exporter3Test {
         for (Map.Entry<String, AnnotationsValue> annotationEntry : annotationMap.entrySet()) {
             String annotationKey = annotationEntry.getKey();
             AnnotationsValue annotationsValue = annotationEntry.getValue();
-            assertEquals(annotationsValue.getType(), AnnotationsValueType.STRING);
+            if ("participantVersion".equals(annotationKey)) {
+                // participantVersion is special. This needs to be joined with the ParticipantVersion table, so it's
+                // a number.
+                assertEquals(annotationsValue.getType(), AnnotationsValueType.LONG);
+            } else {
+                assertEquals(annotationsValue.getType(), AnnotationsValueType.STRING);
+            }
             assertEquals(annotationsValue.getValue().size(), 1);
             flattenedAnnotationMap.put(annotationKey, annotationsValue.getValue().get(0));
         }
@@ -255,14 +267,56 @@ public class Exporter3Test {
         assertEquals(s3Metadata.getContentType(), CONTENT_TYPE_TEXT_PLAIN);
         verifyMetadata(s3Metadata.getUserMetadata(), uploadId);
 
-        // Verify the record in Bridge.
-        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
-        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
-        assertTrue(record.isExported());
+        // Verify the Participant Version table.
+        String healthCode = flattenedAnnotationMap.get("healthCode");
+        String participantVersionStr = flattenedAnnotationMap.get("participantVersion");
+        String participantVersionTableId = ex3Config.getParticipantVersionTableId();
+        String query = "SELECT * FROM " + participantVersionTableId + " WHERE healthCode='" + healthCode +
+                "' and participantVersion=" + participantVersionStr;
+        String queryJobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
+                SynapseClient.QUERY_PARTMASK, participantVersionTableId);
+
+        QueryResultBundle queryResultBundle = null;
+        for (int loops = 0; loops < 5; loops++) {
+            // Poll until result is ready.
+            Thread.sleep(1000);
+            try {
+                queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(queryJobId,
+                        participantVersionTableId);
+            } catch (SynapseResultNotReadyException ex) {
+                // Wait and try again.
+            }
+        }
+        assertNotNull(queryResultBundle, "Timed out querying for participant version");
+
+        RowSet queryRowSet = queryResultBundle.getQueryResult().getQueryResults();
+        List<SelectColumn> columnList = queryRowSet.getHeaders();
+        assertEquals(queryRowSet.getRows().size(), 1);
+        List<String> rowValueList = queryRowSet.getRows().get(0).getValues();
+        assertEquals(columnList.size(), rowValueList.size());
+        Map<String, String> rowMap = new HashMap<>();
+        for (int i = 0; i < columnList.size(); i++) {
+            rowMap.put(columnList.get(i).getName(), rowValueList.get(i));
+        }
+
+        assertEquals(rowMap.get("healthCode"), healthCode);
+        assertEquals(rowMap.get("participantVersion"), participantVersionStr);
+        assertEquals(rowMap.get("sharingScope"), "ALL_QUALIFIED_RESEARCHERS");
 
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
         DateTime oneHourAgo = DateTime.now().minusHours(1);
+
+        long participantCreatedOn = Long.parseLong(rowMap.get("createdOn"));
+        assertTrue(participantCreatedOn > oneHourAgo.getMillis());
+
+        long participantModifiedOn = Long.parseLong(rowMap.get("modifiedOn"));
+        assertTrue(participantModifiedOn > oneHourAgo.getMillis());
+
+        // Verify the record in Bridge.
+        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
+        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
+        assertTrue(record.isExported());
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
     }
 
@@ -313,9 +367,10 @@ public class Exporter3Test {
     }
 
     private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId) {
-        assertEquals(metadataMap.size(), 6);
+        assertEquals(metadataMap.size(), 7);
         assertTrue(metadataMap.containsKey("clientInfo"));
         assertTrue(metadataMap.containsKey("healthCode"));
+        assertEquals(metadataMap.get("participantVersion"), "1");
         assertEquals(metadataMap.get("recordId"), expectedRecordId);
         assertEquals(metadataMap.get(CUSTOM_METADATA_KEY_SANITIZED), CUSTOM_METADATA_VALUE);
 

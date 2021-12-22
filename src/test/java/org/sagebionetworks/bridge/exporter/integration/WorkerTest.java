@@ -224,7 +224,7 @@ public class WorkerTest {
     private static int countRows(String tableId, LocalDate createdDate) throws Exception {
         // Query Synapse
         String jobIdToken = synapseClient.queryTableEntityBundleAsyncStart("select * from " + tableId +
-                        " where createdDate='" + createdDate.toString() + "'", 0L, null, true,
+                        " where createdDate='" + createdDate.toString() + "'", 0L, null,
                 SynapseClient.COUNT_PARTMASK, tableId);
 
         QueryResultBundle queryResultBundle = null;
