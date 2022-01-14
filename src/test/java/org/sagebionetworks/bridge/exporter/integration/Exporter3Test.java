@@ -301,7 +301,7 @@ public class Exporter3Test {
 
         assertEquals(rowMap.get("healthCode"), healthCode);
         assertEquals(rowMap.get("participantVersion"), participantVersionStr);
-        assertEquals(rowMap.get("sharingScope"), "ALL_QUALIFIED_RESEARCHERS");
+        assertEquals(rowMap.get("sharingScope"), "all_qualified_researchers");
 
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
