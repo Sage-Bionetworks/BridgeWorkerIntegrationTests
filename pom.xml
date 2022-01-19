@@ -51,17 +51,17 @@
         <dependency>
             <groupId>org.sagebionetworks</groupId>
             <artifactId>BridgeIntegTestUtils</artifactId>
-            <version>1.1.0</version>
+            <version>1.2.10</version>
         </dependency>
         <dependency>
             <groupId>org.sagebionetworks</groupId>
             <artifactId>synapseJavaClient</artifactId>
-            <version>311.1</version>
+            <version>386.0</version>
         </dependency>
         <dependency>
             <groupId>org.sagebionetworks.bridge</groupId>
             <artifactId>rest-client</artifactId>
-            <version>0.22.28</version>
+            <version>0.23.19</version>
         </dependency>
         <dependency>
             <groupId>org.testng</groupId>

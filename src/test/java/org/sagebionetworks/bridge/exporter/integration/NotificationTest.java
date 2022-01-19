@@ -225,7 +225,7 @@ public class NotificationTest {
     @BeforeMethod
     public void before() throws Exception {
         // Ensure no user with the test phone number
-        IntegTestUtils.deletePhoneUser(researcher);
+        IntegTestUtils.deletePhoneUser();
     }
 
     @AfterMethod
