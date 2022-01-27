@@ -63,6 +63,7 @@ import org.sagebionetworks.bridge.rest.model.StudyParticipant;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.s3.S3Helper;
+import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
@@ -77,12 +78,12 @@ public class Exporter3Test {
     private static final String CUSTOM_METADATA_VALUE = "custom-metadata-value";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
 
-    private static TestUserHelper.TestUser adminDeveloperWorker;
+    private static TestUser adminDeveloperWorker;
     private static Exporter3Configuration ex3Config;
     private static String rawDataBucket;
     private static SynapseClient synapseClient;
 
-    private TestUserHelper.TestUser user;
+    private TestUser user;
 
     @BeforeClass
     public static void beforeClass() throws Exception {

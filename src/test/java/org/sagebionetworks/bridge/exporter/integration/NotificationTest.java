@@ -51,6 +51,7 @@ import org.sagebionetworks.bridge.rest.model.SignUp;
 import org.sagebionetworks.bridge.rest.model.SimpleScheduleStrategy;
 import org.sagebionetworks.bridge.rest.model.TaskReference;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
+import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
@@ -102,10 +103,10 @@ public class NotificationTest {
     private static String workerSqsUrl;
     private static Table ddbNotificationLogTable;
     private static Table ddbWorkerLogTable;
-    private static TestUserHelper.TestUser developer;
-    private static TestUserHelper.TestUser researcher;
+    private static TestUser developer;
+    private static TestUser researcher;
 
-    private TestUserHelper.TestUser user;
+    private TestUser user;
 
     // We want to only set up everything once for the entire test suite, not before each individual test. This means
     // using @BeforeClass, which unfortunately prevents us from using Spring.
@@ -342,7 +343,7 @@ public class NotificationTest {
         testNoNotification("dontNotifyIfCompletedBurst", today.plusDays(7), user);
     }
 
-    private static void testNoNotification(String testName, LocalDate date, TestUserHelper.TestUser user)
+    private static void testNoNotification(String testName, LocalDate date, TestUser user)
             throws Exception {
         // Execute
         executeNotificationWorker(testName, date, user.getUserId());
@@ -360,7 +361,7 @@ public class NotificationTest {
 
         // Create a second user. We pass in the first user in the userList, so this second user should never receive
         // notifications.
-        TestUserHelper.TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
+        TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
         try {
             initUser(secondUser);
 
@@ -523,7 +524,7 @@ public class NotificationTest {
     public void withoutUserList() throws Exception {
         // Create two users and execute without user list.
         user = createAndInitUser();
-        TestUserHelper.TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
+        TestUser secondUser = createUser(SECOND_USER_PHONE_NUMBER);
         try {
             initUser(secondUser);
 
@@ -547,7 +548,7 @@ public class NotificationTest {
         }
     }
 
-    private static List<Item> getNotificationsForUser(String testName, LocalDate date, TestUserHelper.TestUser user)
+    private static List<Item> getNotificationsForUser(String testName, LocalDate date, TestUser user)
             throws Exception {
         // Execute
         executeNotificationWorker(testName, date, user.getUserId());
@@ -588,25 +589,24 @@ public class NotificationTest {
         TestUtils.pollWorkerLog(ddbWorkerLogTable, "ActivityNotificationWorker", previousFinishTime);
     }
 
-    private static TestUserHelper.TestUser createAndInitUser() throws Exception {
-        TestUserHelper.TestUser user = createUser();
+    private static TestUser createAndInitUser() throws Exception {
+        TestUser user = createUser();
         initUser(user);
         return user;
     }
 
-    private static TestUserHelper.TestUser createUser() throws Exception {
+    private static TestUser createUser() throws Exception {
         return createUser(IntegTestUtils.PHONE);
     }
 
-    private static TestUserHelper.TestUser createUser(Phone phone) throws Exception {
+    private static TestUser createUser(Phone phone) throws Exception {
         SignUp signUp = new SignUp().appId(IntegTestUtils.TEST_APP_ID).phone(phone).password("password1");
         signUp.addDataGroupsItem(PREBURST_GROUP_1);
-        TestUserHelper.TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true,
-                signUp);
+        TestUser user = TestUserHelper.createAndSignInUser(NotificationTest.class, true, signUp);
         return user;
     }
 
-    private static void initUser(TestUserHelper.TestUser user) throws Exception {
+    private static void initUser(TestUser user) throws Exception {
         // To initialize user, get activities for the next 28 days.
         DateTime startOfToday = today.toDateTimeAtStartOfDay(LOCAL_TIME_ZONE);
         user.getClient(ActivitiesApi.class).getScheduledActivitiesByDateRange(startOfToday, startOfToday.plusDays(31))
@@ -616,7 +616,7 @@ public class NotificationTest {
         setStudyCommitment(user);
     }
 
-    private static void setStudyCommitment(TestUserHelper.TestUser user) throws Exception {
+    private static void setStudyCommitment(TestUser user) throws Exception {
         Map<String, String> reportData = new HashMap<>();
         reportData.put(STUDY_COMMITMENT_SURVEY_QUESTION, STUDY_COMMITMENT_DUMMY_ANSWER);
         ReportData report = new ReportData().localDate(GLOBAL_DATE).data(reportData);
@@ -624,7 +624,7 @@ public class NotificationTest {
                 .execute();
     }
 
-    private static void completeActivitiesForDateIndices(TestUserHelper.TestUser user, int... indices)
+    private static void completeActivitiesForDateIndices(TestUser user, int... indices)
             throws Exception {
         // Calculate get activities date range. Indices are the indices of the dates we care about (as an offset from
         // today). Min date at midnight and max date at 23:59:59.999 to make sure we catch all activities.

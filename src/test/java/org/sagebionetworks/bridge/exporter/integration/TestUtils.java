@@ -39,6 +39,7 @@ import org.sagebionetworks.bridge.rest.model.UploadSchemaType;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.rest.model.UploadValidationStatus;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
+import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 
 public class TestUtils {
@@ -96,7 +97,7 @@ public class TestUtils {
                 bridgeConfig.getUser() + '-' + shortName);
     }
 
-    public static void ensureSchemas(TestUserHelper.TestUser developer) throws IOException {
+    public static void ensureSchemas(TestUser developer) throws IOException {
         // ensure schemas exist, so we have something to upload against
         UploadSchemasApi uploadSchemasApi = developer.getClient(UploadSchemasApi.class);
 
@@ -139,7 +140,7 @@ public class TestUtils {
         return synapseClient;
     }
 
-    public static UploadValidationStatus upload(TestUserHelper.TestUser user) throws IOException {
+    public static UploadValidationStatus upload(TestUser user) throws IOException {
         // Get file from resources.
         String envName = user.getClientManager().getConfig().getEnvironment().name().toLowerCase(Locale.ENGLISH);
         String filePath = "src/test/resources/uploads/" + envName + "/large-text-attachment-generic";

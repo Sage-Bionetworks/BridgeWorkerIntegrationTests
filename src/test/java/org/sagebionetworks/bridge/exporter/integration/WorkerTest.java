@@ -43,6 +43,7 @@ import org.sagebionetworks.bridge.rest.model.HealthDataSubmission;
 import org.sagebionetworks.bridge.rest.model.ReportData;
 import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
+import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
@@ -71,8 +72,8 @@ public class WorkerTest {
     private static ExecutorService executorService;
     private static String integTestRunId;
     private static Table ddbFitBitTables;
-    private static TestUserHelper.TestUser developer;
-    private static TestUserHelper.TestUser user;
+    private static TestUser developer;
+    private static TestUser user;
 
     // We want to only set up everything once for the entire test suite, not before each individual test. This means
     // using @BeforeClass, which unfortunately prevents us from using Spring.

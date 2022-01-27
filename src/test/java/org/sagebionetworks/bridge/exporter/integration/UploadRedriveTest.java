@@ -25,6 +25,7 @@ import org.sagebionetworks.bridge.rest.model.UploadStatus;
 import org.sagebionetworks.bridge.rest.model.UploadValidationStatus;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
+import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 
 @SuppressWarnings({ "deprecation", "unchecked" })
@@ -36,10 +37,10 @@ public class UploadRedriveTest {
     private static SqsHelper sqsHelper;
     private static String workerSqsUrl;
     private static Table ddbWorkerLogTable;
-    private static TestUserHelper.TestUser developer;
+    private static TestUser developer;
 
     private UploadValidationStatus uploadValidationStatus;
-    private TestUserHelper.TestUser user;
+    private TestUser user;
 
     @BeforeClass
     public static void setupTest() throws Exception {
