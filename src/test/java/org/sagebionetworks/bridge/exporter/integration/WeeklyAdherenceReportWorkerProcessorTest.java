@@ -13,9 +13,11 @@ import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
+import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudyAdherenceApi;
 import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
+import org.sagebionetworks.bridge.rest.model.AccountSummarySearch;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.Schedule2;
@@ -49,6 +51,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     SchedulesV2Api scheduleApi;
     AssessmentsApi assessmentApi;
     StudyAdherenceApi adherenceApi;
+    ParticipantsApi participantApi;
     
     @BeforeMethod
     public void beforeMethod() throws Exception {
@@ -65,6 +68,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
         scheduleApi = admin.getClient(SchedulesV2Api.class);
         adherenceApi = admin.getClient(StudyAdherenceApi.class);
         assessmentApi = admin.getClient(AssessmentsApi.class);
+        participantApi = admin.getClient(ParticipantsApi.class);
         
         // We need to create a schedule in study1 for this user if it doesn't exist.
         try {
@@ -134,19 +138,12 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
     
     private boolean findUser() throws Exception {
-        int offset = 0;
-        WeeklyAdherenceReportList list = null;
-        while (list == null || !list.getItems().isEmpty()) {
-            list = adherenceApi.getStudyParticipantWeeklyAdherenceReports(
-                    STUDY_ID_1, "test", null, null, offset, 100).execute().body();
-            for (WeeklyAdherenceReport report : list.getItems()) {
-                if (report.getParticipant().getIdentifier().equals(userId)) {
-                    return true;
-                }
-            }
-            offset += 100;
+        try {
+            participantApi.getParticipantById(userId, false).execute();
+            return true;
+        } catch(EntityNotFoundException e) {
+            return false;
         }
-        return false;
     }
 
 }
