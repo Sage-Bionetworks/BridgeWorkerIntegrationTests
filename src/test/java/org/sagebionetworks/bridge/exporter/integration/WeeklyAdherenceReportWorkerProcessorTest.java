@@ -120,7 +120,6 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     @Test
     public void requestCaching() throws Exception {
         String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{\"selectedStudies\":{\"api\":[\"study1\"]}}}";
-        // String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{\"appId\":\"api\",\"studyId\":\"study1\"}}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
 
         sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
