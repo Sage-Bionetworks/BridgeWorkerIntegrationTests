@@ -1,5 +1,7 @@
 package org.sagebionetworks.bridge.exporter.integration;
 
+import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
+import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
@@ -19,7 +21,10 @@ import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
+
+import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.sagebionetworks.client.SynapseClient;
@@ -49,17 +54,25 @@ import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.crypto.BcCmsEncryptor;
 import org.sagebionetworks.bridge.crypto.PemUtils;
 import org.sagebionetworks.bridge.rest.RestUtils;
+import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
 import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
+import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.model.App;
+import org.sagebionetworks.bridge.rest.model.Assessment;
+import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.Role;
+import org.sagebionetworks.bridge.rest.model.Schedule2;
+import org.sagebionetworks.bridge.rest.model.Session;
 import org.sagebionetworks.bridge.rest.model.SharingScope;
 import org.sagebionetworks.bridge.rest.model.StudyParticipant;
+import org.sagebionetworks.bridge.rest.model.TimeWindow;
+import org.sagebionetworks.bridge.rest.model.Timeline;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.s3.S3Helper;
@@ -84,6 +97,8 @@ public class Exporter3Test {
     private static SynapseClient synapseClient;
 
     private TestUser user;
+    private Schedule2 schedule;
+    private Assessment assessment;
 
     @BeforeClass
     public static void beforeClass() throws Exception {
@@ -114,6 +129,15 @@ public class Exporter3Test {
     public void after() throws Exception {
         if (user != null) {
             user.signOutAndDeleteUser();
+        }
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        if (schedule != null) {
+            SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+            schedulesApi.deleteSchedule(schedule.getGuid()).execute();
+        }
+        if (assessment != null) {
+            AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
+            assessmentsApi.deleteAssessment(assessment.getGuid(), true).execute();
         }
     }
 
@@ -210,8 +234,71 @@ public class Exporter3Test {
     public void unencryptedUpload() throws Exception {
         testUpload(UPLOAD_CONTENT, false);
     }
+    
+    @Test
+    public void uploadWithScheduleContext() throws Exception {
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
+        SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+        
+        String assessmentId = getClass().getSimpleName() + "-" + RandomStringUtils.randomAlphabetic(10);
+        
+        assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
+                .identifier(assessmentId);
+        assessment = assessmentsApi.createAssessment(assessment).execute().body();
+
+        schedule = new Schedule2();
+        schedule.setName("Test Schedule [Exporter3Test]");
+        schedule.setDuration("P1W");
+
+        Session session = new Session();
+        session.setName("Once time task");
+        session.addStartEventIdsItem("enrollment");
+        session.setPerformanceOrder(SEQUENTIAL);
+
+        AssessmentReference2 ref = new AssessmentReference2()
+                .guid(assessment.getGuid()).appId(TEST_APP_ID)
+                .title(assessmentId)
+                .identifier(assessment.getIdentifier())
+                .revision(assessment.getRevision().intValue());
+        session.addAssessmentsItem(ref);
+        session.addTimeWindowsItem(new TimeWindow().startTime("00:00").expiration("P1W"));
+        schedule.addSessionsItem(session);
+
+        schedule = schedulesApi.saveScheduleForStudy("study1", schedule).execute().body();
+        
+        Timeline timeline = schedulesApi.getTimelineForStudy("study1").execute().body();
+        
+        // Could also use the session instanceGuid, it doesn't matter. 
+        String instanceGuid = timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid();
+
+        Map<String,String> userMetadata = new HashMap<>();
+        userMetadata.put("instanceGuid", instanceGuid);
+
+        Map<String,String> expectedMetadata = new HashMap<>();
+        expectedMetadata.put("instanceGuid", instanceGuid);
+        expectedMetadata.put("assessmentGuid", assessment.getGuid());
+        expectedMetadata.put("assessmentId", assessment.getIdentifier());
+        expectedMetadata.put("assessmentRevision", assessment.getRevision().toString());
+        expectedMetadata.put("assessmentInstanceGuid", 
+                timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid());
+        expectedMetadata.put("sessionInstanceGuid", timeline.getSchedule().get(0).getInstanceGuid());
+        expectedMetadata.put("sessionGuid", timeline.getSchedule().get(0).getRefGuid());
+        expectedMetadata.put("sessionInstanceStartDay", timeline.getSchedule().get(0).getStartDay().toString());
+        expectedMetadata.put("sessionInstanceEndDay", timeline.getSchedule().get(0).getEndDay().toString());
+        expectedMetadata.put("sessionStartEventId", "enrollment");
+        expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
+        expectedMetadata.put("scheduleGuid", schedule.getGuid());
+        expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
+        testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);    
+    }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
+        testUpload(content, encrypted, ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
+                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
+    }
+    
+    private void testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
         // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
         // so that the test can succeed.
         ParticipantsApi participantsApi = user.getClient(ParticipantsApi.class);
@@ -220,7 +307,7 @@ public class Exporter3Test {
         participantsApi.updateUsersParticipantRecord(participant).execute();
 
         // Upload file to Bridge.
-        UploadInfo uploadInfo = uploadFile(content, encrypted);
+        UploadInfo uploadInfo = uploadFile(content, encrypted, userMetadata, expectedMetadata);
         String filename = uploadInfo.filename;
         String uploadId = uploadInfo.uploadId;
 
@@ -250,7 +337,7 @@ public class Exporter3Test {
             assertEquals(annotationsValue.getValue().size(), 1);
             flattenedAnnotationMap.put(annotationKey, annotationsValue.getValue().get(0));
         }
-        verifyMetadata(flattenedAnnotationMap, uploadId);
+        verifyMetadata(flattenedAnnotationMap, uploadId, expectedMetadata);
 
         // Get the STS token and verify the file in S3.
         AWSCredentialsProvider awsCredentialsProvider = new SynapseStsCredentialsProvider(synapseClient, rawFolderId,
@@ -266,7 +353,7 @@ public class Exporter3Test {
         ObjectMetadata s3Metadata = s3Helper.getObjectMetadata(rawDataBucket, expectedS3Key);
         assertEquals(s3Metadata.getSSEAlgorithm(), ObjectMetadata.AES_256_SERVER_SIDE_ENCRYPTION);
         assertEquals(s3Metadata.getContentType(), CONTENT_TYPE_TEXT_PLAIN);
-        verifyMetadata(s3Metadata.getUserMetadata(), uploadId);
+        verifyMetadata(s3Metadata.getUserMetadata(), uploadId, expectedMetadata);
 
         // Verify the Participant Version table.
         String healthCode = flattenedAnnotationMap.get("healthCode");
@@ -325,8 +412,14 @@ public class Exporter3Test {
         String filename;
         String uploadId;
     }
-
+    
     private UploadInfo uploadFile(byte[] content, boolean encrypted) throws InterruptedException, IOException {
+        return uploadFile(content, encrypted, ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
+                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));        
+    }
+
+    private UploadInfo uploadFile(byte[] content, boolean encrypted, Map<String, String> userMetadata,
+            Map<String, String> expectedMetadata) throws InterruptedException, IOException {
         // Create a temp file so that we can use RestUtils.
         File file = File.createTempFile("text", ".txt");
         String filename = file.getName();
@@ -336,7 +429,9 @@ public class Exporter3Test {
         // to overwrite this.
         UploadRequest uploadRequest = RestUtils.makeUploadRequestForFile(file);
         uploadRequest.setContentType(CONTENT_TYPE_TEXT_PLAIN);
-        uploadRequest.putMetadataItem(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE);
+        for (Map.Entry<String,String> entry : userMetadata.entrySet()) {
+            uploadRequest.putMetadataItem(entry.getKey(), entry.getValue());    
+        }
         uploadRequest.setEncrypted(encrypted);
         uploadRequest.setZipped(false);
 
@@ -367,14 +462,15 @@ public class Exporter3Test {
                 .findAny().get();
     }
 
-    private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId) {
-        assertEquals(metadataMap.size(), 7);
+    private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues) {
+        assertEquals(metadataMap.size(), 6 + expectedValues.size());
         assertTrue(metadataMap.containsKey("clientInfo"));
         assertTrue(metadataMap.containsKey("healthCode"));
         assertEquals(metadataMap.get("participantVersion"), "1");
         assertEquals(metadataMap.get("recordId"), expectedRecordId);
-        assertEquals(metadataMap.get(CUSTOM_METADATA_KEY_SANITIZED), CUSTOM_METADATA_VALUE);
-
+        for (String key : expectedValues.keySet()) {
+            assertEquals(metadataMap.get(key), expectedValues.get(key), key + " has invalid value");
+        }
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
         DateTime oneHourAgo = DateTime.now().minusHours(1);
