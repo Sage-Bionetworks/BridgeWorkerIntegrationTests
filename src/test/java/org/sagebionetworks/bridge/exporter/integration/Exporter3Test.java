@@ -3,9 +3,10 @@ package org.sagebionetworks.bridge.exporter.integration;
 import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,13 +15,11 @@ import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
 
@@ -30,11 +29,8 @@ import org.joda.time.LocalDate;
 import org.sagebionetworks.client.SynapseClient;
 import org.sagebionetworks.client.SynapseStsCredentialsProvider;
 import org.sagebionetworks.client.exceptions.SynapseException;
+import org.sagebionetworks.client.exceptions.SynapseNotFoundException;
 import org.sagebionetworks.client.exceptions.SynapseResultNotReadyException;
-import org.sagebionetworks.repo.model.EntityChildrenRequest;
-import org.sagebionetworks.repo.model.EntityChildrenResponse;
-import org.sagebionetworks.repo.model.EntityHeader;
-import org.sagebionetworks.repo.model.EntityType;
 import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
@@ -189,11 +185,10 @@ public class Exporter3Test {
     }
 
     // Note: There are other test cases, for example, if the participant uploads and then turns off sharing before the
-    // upload is exported. This might happen if Synapse is down for maintenance, or in the case of a redrive. However,
-    // the first scenario is impractical to test in an integration test, and the second scenario depends on a feature
-    // that's not yet implemented (redrives). For now, we only have this one test.
+    // upload is exported. This might happen if Synapse is down for maintenance.
+    // This specific test will test no_sharing and redrives.
     @Test
-    public void noSharing() throws Exception {
+    public void noSharingAndRedrives() throws Exception {
         // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. No need to
         // change the participant here.
 
@@ -207,15 +202,42 @@ public class Exporter3Test {
         String todaysDateString = LocalDate.now(TestUtils.LOCAL_TIME_ZONE).toString();
         String exportedFilename = uploadId + '-' + filename;
 
-        // Depending on the order that TestNG runs the tests, we'll either throw getting the folder or we'll throw
-        // getting the child inside the folder.
-        try {
-            String todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString, EntityType.folder);
-            getSynapseChildByName(todayFolderId, exportedFilename, EntityType.file);
-            fail("expected exception");
-        } catch (NoSuchElementException ex) {
-            // expected exception
+        // Depending on the order that TestNG runs the tests, the parent folder might not have been created yet.
+        String todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString);
+        String unsharedFileId = null;
+        if (todayFolderId != null) {
+            unsharedFileId = getSynapseChildByName(todayFolderId, exportedFilename);
         }
+        assertNull(unsharedFileId);
+
+        // Add a sharing status.
+        ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
+        StudyParticipant participant = usersApi.getUsersParticipantRecord(false).execute().body();
+        participant.setSharingScope(SharingScope.ALL_QUALIFIED_RESEARCHERS);
+        usersApi.updateUsersParticipantRecord(participant).execute();
+
+        // Redrive will look at participant's current sharing scope, which will cause the redriven upload to be
+        // exported.
+        usersApi.completeUploadSession(uploadId, true, true).execute();
+        Thread.sleep(2000);
+        todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString);
+        String sharedFileId = getSynapseChildByName(todayFolderId, exportedFilename);
+        assertNotNull(sharedFileId);
+
+        // Delete the file from Synapse and redrive again. We have a new file entity ID.
+        synapseClient.deleteEntityById(sharedFileId, true);
+        usersApi.completeUploadSession(uploadId, true, true).execute();
+        Thread.sleep(2000);
+        String redrivenFileId = getSynapseChildByName(todayFolderId, exportedFilename);
+        assertNotNull(redrivenFileId);
+        assertNotEquals(redrivenFileId, sharedFileId);
+
+        // Redrive the upload a second time, but don't delete it first. Worker should silently handle this case.
+        usersApi.completeUploadSession(uploadId, true, true).execute();
+        Thread.sleep(2000);
+        String redrivenFileId2 = getSynapseChildByName(todayFolderId, exportedFilename);
+        assertNotNull(redrivenFileId2);
+        assertEquals(redrivenFileId2, redrivenFileId);
     }
 
     @Test
@@ -317,8 +339,8 @@ public class Exporter3Test {
         String exportedFilename = uploadId + '-' + filename;
 
         // First, get the exported file.
-        String todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString, EntityType.folder);
-        String exportedFileId = getSynapseChildByName(todayFolderId, exportedFilename, EntityType.file);
+        String todayFolderId = getSynapseChildByName(rawFolderId, todaysDateString);
+        String exportedFileId = getSynapseChildByName(todayFolderId, exportedFilename);
 
         // Now verify the annotations.
         Annotations annotations = synapseClient.getAnnotationsV2(exportedFileId);
@@ -451,15 +473,12 @@ public class Exporter3Test {
         return uploadInfo;
     }
 
-    private String getSynapseChildByName(String parentId, String childName, EntityType type) throws SynapseException {
-        // This only works because we clean up the Synapse project at the start of every test run, so there are only
-        // 1-2 children.
-        EntityChildrenRequest request = new EntityChildrenRequest();
-        request.setParentId(parentId);
-        request.setIncludeTypes(ImmutableList.of(type));
-        EntityChildrenResponse response = synapseClient.getEntityChildren(request);
-        return response.getPage().stream().filter(h -> childName.equals(h.getName())).map(EntityHeader::getId)
-                .findAny().get();
+    private String getSynapseChildByName(String parentId, String childName) throws SynapseException {
+        try {
+            return synapseClient.lookupChild(parentId, childName);
+        } catch (SynapseNotFoundException ex) {
+            return null;
+        }
     }
 
     private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues) {
