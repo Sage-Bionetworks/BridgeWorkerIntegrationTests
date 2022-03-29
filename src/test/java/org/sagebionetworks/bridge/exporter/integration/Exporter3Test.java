@@ -1,5 +1,11 @@
 package org.sagebionetworks.bridge.exporter.integration;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.fluent.Request;
+import org.apache.http.util.EntityUtils;
+
 import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
@@ -428,6 +434,26 @@ public class Exporter3Test {
         HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
         assertTrue(record.isExported());
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+
+        // Verify the presigned download url for a health record is generated and contains the data expected.
+        String hostUrl = user.getClientManager().getHostUrl();
+        String url = "/v3/participants/self/exporter3/healthdata/" + uploadId + "?download=true";
+
+        HttpResponse response = Request.Get(hostUrl + url)
+                .setHeader("Bridge-Session", user.getSession().getSessionToken())
+                .setHeader("Accept-Language", "en")
+                .execute().returnResponse();
+        assertEquals(200, response.getStatusLine().getStatusCode());
+
+        JsonNode node = new ObjectMapper().readTree(EntityUtils.toString(response.getEntity()));
+        HttpResponse responseForPresignedUrl =Request.Get(node.findValue("downloadUrl").asText())
+                .setHeader("Bridge-Session", user.getSession().getSessionToken())
+                .setHeader("Accept-Language", "en")
+                .execute().returnResponse();
+        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
+
+        String contentForPresignedUrl= EntityUtils.toString(responseForPresignedUrl.getEntity());
+        assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
     }
 
     private static class UploadInfo {

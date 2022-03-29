@@ -61,7 +61,7 @@
         <dependency>
             <groupId>org.sagebionetworks.bridge</groupId>
             <artifactId>rest-client</artifactId>
-            <version>0.23.22</version>
+            <version>0.24.6</version>
         </dependency>
         <dependency>
             <groupId>org.testng</groupId>
@@ -80,6 +80,16 @@
             <artifactId>logback-core</artifactId>
             <version>${logback.version}</version>
             <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+            <version>4.5.13</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>fluent-hc</artifactId>
+            <version>4.3.5</version>
         </dependency>
     </dependencies>
 
