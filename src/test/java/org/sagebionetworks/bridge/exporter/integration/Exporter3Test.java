@@ -28,7 +28,6 @@ import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
-
 import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
@@ -63,6 +62,7 @@ import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
 import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
+import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
@@ -72,6 +72,7 @@ import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Schedule2;
 import org.sagebionetworks.bridge.rest.model.Session;
 import org.sagebionetworks.bridge.rest.model.SharingScope;
+import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.StudyParticipant;
 import org.sagebionetworks.bridge.rest.model.TimeWindow;
 import org.sagebionetworks.bridge.rest.model.Timeline;
@@ -91,10 +92,12 @@ public class Exporter3Test {
     private static final String CUSTOM_METADATA_KEY = "custom-metadata-key";
     private static final String CUSTOM_METADATA_KEY_SANITIZED = "custom_metadata_key";
     private static final String CUSTOM_METADATA_VALUE = "custom-metadata-value";
+    private static final String STUDY_ID = "study1";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
 
     private static TestUser adminDeveloperWorker;
     private static Exporter3Configuration ex3Config;
+    private static Exporter3Configuration ex3ConfigForStudy;
     private static String rawDataBucket;
     private static SynapseClient synapseClient;
 
@@ -120,10 +123,12 @@ public class Exporter3Test {
         // Init Exporter 3.
         ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
         ex3Config = adminsApi.initExporter3().execute().body();
+        ex3ConfigForStudy = adminsApi.initExporter3ForStudy(STUDY_ID).execute().body();
     }
 
     @BeforeMethod
     public void before() throws Exception {
+        // Note: Consent also enrolls the participant in study1.
         user = TestUserHelper.createAndSignInUser(Exporter3Test.class, true);
     }
 
@@ -154,9 +159,28 @@ public class Exporter3Test {
     }
 
     private static void deleteEx3Resources() throws IOException {
+        // Delete for app.
         ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
         App app = adminsApi.getUsersApp().execute().body();
         Exporter3Configuration ex3Config = app.getExporter3Configuration();
+        deleteEx3Resources(ex3Config);
+
+        app.setExporter3Configuration(null);
+        app.setExporter3Enabled(false);
+        adminsApi.updateUsersApp(app).execute();
+
+        // Delete for study.
+        StudiesApi studiesApi = adminDeveloperWorker.getClient(StudiesApi.class);
+        Study study = studiesApi.getStudy(STUDY_ID).execute().body();
+        Exporter3Configuration ex3ConfigForStudy = study.getExporter3Configuration();
+        deleteEx3Resources(ex3ConfigForStudy);
+
+        study.setExporter3Configuration(null);
+        study.setExporter3Enabled(false);
+        studiesApi.updateStudy(STUDY_ID, study).execute();
+    }
+
+    private static void deleteEx3Resources(Exporter3Configuration ex3Config) {
         if (ex3Config == null) {
             // Exporter 3 is not configured on this app. We can skip this step.
             return;
@@ -183,11 +207,6 @@ public class Exporter3Test {
         }
 
         // Storage locations are idempotent, so no need to delete that.
-
-        // Reset the Exporter 3 Config.
-        app.setExporter3Configuration(null);
-        app.setExporter3Enabled(false);
-        adminsApi.updateUsersApp(app).execute();
     }
 
     // Note: There are other test cases, for example, if the participant uploads and then turns off sharing before the
@@ -293,9 +312,9 @@ public class Exporter3Test {
         session.addTimeWindowsItem(new TimeWindow().startTime("00:00").expiration("P1W"));
         schedule.addSessionsItem(session);
 
-        schedule = schedulesApi.saveScheduleForStudy("study1", schedule).execute().body();
+        schedule = schedulesApi.saveScheduleForStudy(STUDY_ID, schedule).execute().body();
         
-        Timeline timeline = schedulesApi.getTimelineForStudy("study1").execute().body();
+        Timeline timeline = schedulesApi.getTimelineForStudy(STUDY_ID).execute().body();
         
         // Could also use the session instanceGuid, it doesn't matter. 
         String instanceGuid = timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid();
@@ -339,6 +358,20 @@ public class Exporter3Test {
         String filename = uploadInfo.filename;
         String uploadId = uploadInfo.uploadId;
 
+        // Verify Synapse and S3.
+        verifyUpload(ex3Config, uploadId, filename, false, expectedMetadata);
+        verifyUpload(ex3ConfigForStudy, uploadId, filename, true, expectedMetadata);
+
+        // Verify the record in Bridge.
+        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
+        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
+        assertTrue(record.isExported());
+        DateTime oneHourAgo = DateTime.now().minusHours(1);
+        assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+    }
+
+    private void verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
+            Map<String,String> expectedMetadata) throws Exception {
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
         String todaysDateString = LocalDate.now(TestUtils.LOCAL_TIME_ZONE).toString();
@@ -374,7 +407,13 @@ public class Exporter3Test {
         S3Helper s3Helper = new S3Helper();
         s3Helper.setS3Client(s3Client);
 
-        String expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + todaysDateString + '/' + exportedFilename;
+        String expectedS3Key;
+        if (isForStudy) {
+            expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + STUDY_ID + '/' + todaysDateString + '/' +
+                    exportedFilename;
+        } else {
+            expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + todaysDateString + '/' + exportedFilename;
+        }
         byte[] s3Bytes = s3Helper.readS3FileAsBytes(rawDataBucket, expectedS3Key);
         assertEquals(s3Bytes, UPLOAD_CONTENT);
 
