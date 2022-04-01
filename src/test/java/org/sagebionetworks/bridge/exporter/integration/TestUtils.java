@@ -129,7 +129,7 @@ public class TestUtils {
     public static SynapseClient getSynapseClient(Config config) {
         SynapseClient synapseClient = new SynapseClientImpl();
         synapseClient.setUsername(config.get("synapse.user"));
-        synapseClient.setApiKey(config.get("synapse.api.key"));
+        synapseClient.setBearerAuthorizationToken(config.get("synapse.access.token"));
 
         // Based on config, we either talk to Synapse Dev (local/dev/staging) or Synapse Prod.
         String synapseEndpoint = config.get("synapse.endpoint");
