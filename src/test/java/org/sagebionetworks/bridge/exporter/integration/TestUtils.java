@@ -129,6 +129,8 @@ public class TestUtils {
     public static SynapseClient getSynapseClient(Config config) {
         SynapseClient synapseClient = new SynapseClientImpl();
         synapseClient.setUsername(config.get("synapse.user"));
+        
+        System.out.println(config.get("synapse.access.token"));
         synapseClient.setBearerAuthorizationToken(config.get("synapse.access.token"));
 
         // Based on config, we either talk to Synapse Dev (local/dev/staging) or Synapse Prod.
