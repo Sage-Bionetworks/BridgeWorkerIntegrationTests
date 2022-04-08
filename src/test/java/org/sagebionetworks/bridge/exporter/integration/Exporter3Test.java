@@ -1,13 +1,10 @@
 package org.sagebionetworks.bridge.exporter.integration;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
+import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.fluent.Request;
 import org.apache.http.util.EntityUtils;
-
-import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
-import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
@@ -59,7 +56,6 @@ import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
-import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
@@ -363,11 +359,21 @@ public class Exporter3Test {
         verifyUpload(ex3ConfigForStudy, uploadId, filename, true, expectedMetadata);
 
         // Verify the record in Bridge.
-        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
-        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
+        ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
+        HealthDataRecordEx3 record = usersApi.getRecordEx3ById(uploadId, "true").execute().body();
         assertTrue(record.isExported());
         DateTime oneHourAgo = DateTime.now().minusHours(1);
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+
+        // Verify the presigned download url for a health record is generated and contains the data expected.
+        String url = record.getDownloadUrl();
+        HttpResponse responseForPresignedUrl = Request.Get(url).execute().returnResponse();
+        String contentForPresignedUrl = EntityUtils.toString(responseForPresignedUrl.getEntity());
+        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
+        assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
+
+        DateTime fiftyNineMinsAfter = DateTime.now().plusMinutes(59);
+        assertTrue(record.getDownloadExpiration().isAfter(fiftyNineMinsAfter));
     }
 
     private void verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
@@ -467,32 +473,6 @@ public class Exporter3Test {
 
         long participantModifiedOn = Long.parseLong(rowMap.get("modifiedOn"));
         assertTrue(participantModifiedOn > oneHourAgo.getMillis());
-
-        // Verify the record in Bridge.
-        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
-        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
-        assertTrue(record.isExported());
-        assertTrue(record.getExportedOn().isAfter(oneHourAgo));
-
-        // Verify the presigned download url for a health record is generated and contains the data expected.
-        String hostUrl = user.getClientManager().getHostUrl();
-        String url = "/v3/participants/self/exporter3/healthdata/" + uploadId + "?download=true";
-
-        HttpResponse response = Request.Get(hostUrl + url)
-                .setHeader("Bridge-Session", user.getSession().getSessionToken())
-                .setHeader("Accept-Language", "en")
-                .execute().returnResponse();
-        assertEquals(200, response.getStatusLine().getStatusCode());
-
-        JsonNode node = new ObjectMapper().readTree(EntityUtils.toString(response.getEntity()));
-        HttpResponse responseForPresignedUrl =Request.Get(node.findValue("downloadUrl").asText())
-                .setHeader("Bridge-Session", user.getSession().getSessionToken())
-                .setHeader("Accept-Language", "en")
-                .execute().returnResponse();
-        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
-
-        String contentForPresignedUrl= EntityUtils.toString(responseForPresignedUrl.getEntity());
-        assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
     }
 
     private static class UploadInfo {
