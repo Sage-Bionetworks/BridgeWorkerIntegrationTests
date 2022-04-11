@@ -2,9 +2,6 @@ package org.sagebionetworks.bridge.exporter.integration;
 
 import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
-import org.apache.http.HttpResponse;
-import org.apache.http.client.fluent.Request;
-import org.apache.http.util.EntityUtils;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
@@ -47,6 +44,9 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.fluent.Request;
+import org.apache.http.util.EntityUtils;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.crypto.BcCmsEncryptor;
@@ -372,8 +372,8 @@ public class Exporter3Test {
         assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
         assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
 
-        DateTime fiftyNineMinsAfter = DateTime.now().plusMinutes(59);
-        assertTrue(record.getDownloadExpiration().isAfter(fiftyNineMinsAfter));
+        DateTime fiftyMinsAfter = DateTime.now().plusMinutes(50);
+        assertTrue(record.getDownloadExpiration().isAfter(fiftyMinsAfter));
     }
 
     private void verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
