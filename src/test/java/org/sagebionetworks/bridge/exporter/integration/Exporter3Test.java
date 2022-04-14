@@ -44,6 +44,9 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.fluent.Request;
+import org.apache.http.util.EntityUtils;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.crypto.BcCmsEncryptor;
@@ -53,7 +56,6 @@ import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
-import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
@@ -357,11 +359,21 @@ public class Exporter3Test {
         verifyUpload(ex3ConfigForStudy, uploadId, filename, true, expectedMetadata);
 
         // Verify the record in Bridge.
-        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
-        HealthDataRecordEx3 record = workersApi.getRecordEx3(IntegTestUtils.TEST_APP_ID, uploadId).execute().body();
+        ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
+        HealthDataRecordEx3 record = usersApi.getRecordEx3ById(uploadId, "true").execute().body();
         assertTrue(record.isExported());
         DateTime oneHourAgo = DateTime.now().minusHours(1);
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+
+        // Verify the presigned download url for a health record is generated and contains the data expected.
+        String url = record.getDownloadUrl();
+        HttpResponse responseForPresignedUrl = Request.Get(url).execute().returnResponse();
+        String contentForPresignedUrl = EntityUtils.toString(responseForPresignedUrl.getEntity());
+        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
+        assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
+
+        DateTime fiftyMinsAfter = DateTime.now().plusMinutes(50);
+        assertTrue(record.getDownloadExpiration().isAfter(fiftyMinsAfter));
     }
 
     private void verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
