@@ -8,7 +8,13 @@ import static org.testng.Assert.assertTrue;
 
 import java.io.IOException;
 
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.commons.lang3.RandomStringUtils;
+import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.Test;
+
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
@@ -28,12 +34,6 @@ import org.sagebionetworks.bridge.rest.model.WeeklyAdherenceReportList;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
-
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class WeeklyAdherenceReportWorkerProcessorTest {
     
@@ -143,7 +143,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
         while (list == null || !list.getItems().isEmpty()) {
             AdherenceReportSearch search = new AdherenceReportSearch()
                     .testFilter(TestFilter.TEST).pageSize(100).offsetBy(offset);
-            list = adherenceApi.getStudyParticipantWeeklyAdherenceReports(
+            list = adherenceApi.getWeeklyAdherenceReports(
                     STUDY_ID_1, search).execute().body();
             for (WeeklyAdherenceReport report : list.getItems()) {
                 if (report.getParticipant().getIdentifier().equals(userId)) {
