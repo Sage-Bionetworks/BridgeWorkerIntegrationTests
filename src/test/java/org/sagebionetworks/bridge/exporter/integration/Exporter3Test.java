@@ -20,9 +20,13 @@ import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
 import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.fluent.Request;
+import org.apache.http.util.EntityUtils;
 import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.sagebionetworks.client.SynapseClient;
@@ -44,13 +48,11 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
-import org.apache.http.HttpResponse;
-import org.apache.http.client.fluent.Request;
-import org.apache.http.util.EntityUtils;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.crypto.BcCmsEncryptor;
 import org.sagebionetworks.bridge.crypto.PemUtils;
+import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.RestUtils;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
@@ -526,15 +528,21 @@ public class Exporter3Test {
         }
     }
 
-    private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues) {
+    private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues)
+    throws Exception {
         assertEquals(metadataMap.size(), 6 + expectedValues.size());
-        assertTrue(metadataMap.containsKey("clientInfo"));
         assertTrue(metadataMap.containsKey("healthCode"));
         assertEquals(metadataMap.get("participantVersion"), "1");
         assertEquals(metadataMap.get("recordId"), expectedRecordId);
         for (String key : expectedValues.keySet()) {
             assertEquals(metadataMap.get(key), expectedValues.get(key), key + " has invalid value");
         }
+
+        // Client info exists and is in JSON format.
+        String clientInfoJsonText = metadataMap.get("clientInfo");
+        JsonNode jsonNode = DefaultObjectMapper.INSTANCE.readTree(clientInfoJsonText);
+        assertTrue(jsonNode.isObject());
+
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
         DateTime oneHourAgo = DateTime.now().minusHours(1);
