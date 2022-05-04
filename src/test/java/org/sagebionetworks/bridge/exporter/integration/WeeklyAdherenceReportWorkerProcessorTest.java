@@ -10,7 +10,6 @@ import java.io.IOException;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.collect.ImmutableMap;
 
 import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
@@ -206,7 +205,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
 
     @Test
     public void requestCachingWrongStudy() throws Exception {
-        // In this case, the hour of day will always be wrong, and so the request will be skipped.
+        // In this case, the hour of day will be correct but the study is in a non-existent app, so nothing is generated
         DateTime time = DateTime.now();
         int hourOfDay = time.getHourOfDay();
         String zoneId = time.getZone().getID();
