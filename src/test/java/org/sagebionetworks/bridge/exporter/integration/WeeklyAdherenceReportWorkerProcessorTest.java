@@ -15,6 +15,7 @@ import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
@@ -149,6 +150,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
     
     @Test
+    @Ignore
     public void requestCachingWrongHourOfDay() throws Exception {
         // In this case, the hour of day will always be wrong, and so the request will be skipped.
         DateTime time = DateTime.now();
@@ -174,6 +176,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
 
     @Test
+    @Ignore
     public void requestCachingWrongTimeZone() throws Exception {
         // In this case, the hour of day will always be wrong, and so the request will be skipped.
         DateTime time = DateTime.now();
@@ -204,6 +207,7 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
 
     @Test
+    @Ignore
     public void requestCachingWrongStudy() throws Exception {
         // In this case, the hour of day will be correct but the study is in a non-existent app, so nothing is generated
         DateTime time = DateTime.now();
