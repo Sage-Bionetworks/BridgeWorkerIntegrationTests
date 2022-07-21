@@ -18,9 +18,12 @@ import java.util.Map;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
+import com.amazonaws.services.dynamodbv2.document.DynamoDB;
+import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
 import org.apache.commons.lang3.RandomStringUtils;
@@ -58,6 +61,7 @@ import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
+import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
@@ -66,10 +70,12 @@ import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
+import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
 import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Schedule2;
 import org.sagebionetworks.bridge.rest.model.Session;
 import org.sagebionetworks.bridge.rest.model.SharingScope;
+import org.sagebionetworks.bridge.rest.model.SharingScopeForm;
 import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.StudyParticipant;
 import org.sagebionetworks.bridge.rest.model.TimeWindow;
@@ -77,6 +83,7 @@ import org.sagebionetworks.bridge.rest.model.Timeline;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.s3.S3Helper;
+import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
@@ -85,6 +92,7 @@ import org.sagebionetworks.bridge.util.IntegTestUtils;
 public class Exporter3Test {
     private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
 
+    private static final String CONFIG_KEY_BACKFILL_BUCKET = "backfill.bucket";
     private static final String CONFIG_KEY_RAW_DATA_BUCKET = "health.data.bucket.raw";
     private static final String CONTENT_TYPE_TEXT_PLAIN = "text/plain";
     private static final String CUSTOM_METADATA_KEY = "custom-metadata-key";
@@ -92,12 +100,18 @@ public class Exporter3Test {
     private static final String CUSTOM_METADATA_VALUE = "custom-metadata-value";
     private static final String STUDY_ID = "study1";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
+    private static final String WORKER_ID_BACKFILL_PARTICIPANTS = "BackfillParticipantVersionsWorker";
 
     private static TestUser adminDeveloperWorker;
+    private static String backfillBucket;
+    private static Table ddbWorkerLogTable;
     private static Exporter3Configuration ex3Config;
     private static Exporter3Configuration ex3ConfigForStudy;
     private static String rawDataBucket;
+    private static S3Helper s3Helper;
+    private static SqsHelper sqsHelper;
     private static SynapseClient synapseClient;
+    private static String workerSqsUrl;
 
     private TestUser user;
     private Schedule2 schedule;
@@ -106,7 +120,21 @@ public class Exporter3Test {
     @BeforeClass
     public static void beforeClass() throws Exception {
         Config config = TestUtils.loadConfig();
+        backfillBucket = config.get(CONFIG_KEY_BACKFILL_BUCKET);
         rawDataBucket = config.get(CONFIG_KEY_RAW_DATA_BUCKET);
+
+        // Set up AWS clients.
+        AWSCredentialsProvider awsCredentialsProvider = TestUtils.getAwsCredentialsForConfig(config);
+
+        DynamoDB ddbClient = TestUtils.getDdbClient(awsCredentialsProvider);
+        ddbWorkerLogTable = TestUtils.getDdbTable(config, ddbClient, "WorkerLog");
+
+        AmazonS3Client s3Client = new AmazonS3Client(awsCredentialsProvider);
+        s3Helper = new S3Helper();
+        s3Helper.setS3Client(s3Client);
+
+        workerSqsUrl = config.get("worker.request.sqs.queue.url");
+        sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
 
         // Set up SynapseClient.
         synapseClient = TestUtils.getSynapseClient(config);
@@ -261,6 +289,77 @@ public class Exporter3Test {
         String redrivenFileId2 = getSynapseChildByName(todayFolderId, exportedFilename);
         assertNotNull(redrivenFileId2);
         assertEquals(redrivenFileId2, redrivenFileId);
+    }
+
+    @Test
+    public void backfillParticipantVersion() throws Exception {
+        String userId = user.getUserId();
+
+        // Participant version hasn't been created yet, since TestUserHelper creates the user with no_sharing.
+        // Temporarily disable Exporter 3 for app. This way, when we flip the user to all_qualified_researchers, it
+        // doesn't create a participant version.
+        ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
+        App app = adminsApi.getUsersApp().execute().body();
+        app.setExporter3Enabled(false);
+        app.setHealthCodeExportEnabled(true);
+        adminsApi.updateUsersApp(app).execute();
+
+        // Also, we need the healthcode.
+        StudyParticipant participant = adminDeveloperWorker.getClient(ParticipantsApi.class)
+                .getParticipantById(userId, false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // Set the sharing scope.
+        user.getClient(ForConsentedUsersApi.class).changeSharingScope(new SharingScopeForm()
+                .scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
+
+        // Enable Exporter 3.
+        app = adminsApi.getUsersApp().execute().body();
+        app.setExporter3Enabled(true);
+        adminsApi.updateUsersApp(app).execute();
+
+        // There are no participant versions, since Exporter 3 is was disabled when the user was created.
+        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
+        List<ParticipantVersion> participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID,
+                userId).execute().body().getItems();
+        assertTrue(participantVersionList.isEmpty());
+
+        // Backfill participant version using backfill worker. Start by creating the list of participants to redrive
+        // (with one participant).
+        String filename = "backfill-" + getClass().getSimpleName() + "-" +
+                RandomStringUtils.randomAlphabetic(10);
+        s3Helper.writeLinesToS3(backfillBucket, filename, ImmutableList.of(healthCode));
+
+        // We need to know the previous finish time so we can determine when the worker is finished.
+        long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
+                WORKER_ID_BACKFILL_PARTICIPANTS);
+
+        // Create request.
+        String requestText = "{\n" +
+                "   \"service\":\"" + WORKER_ID_BACKFILL_PARTICIPANTS + "\",\n" +
+                "   \"body\":{\n" +
+                "       \"appId\":\"" + TEST_APP_ID + "\",\n" +
+                "       \"s3Key\":\"" + filename + "\"\n" +
+                "   }\n" +
+                "}";
+        JsonNode requestNode = DefaultObjectMapper.INSTANCE.readTree(requestText);
+        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
+
+        // Wait until the worker is finished.
+        TestUtils.pollWorkerLog(ddbWorkerLogTable, WORKER_ID_BACKFILL_PARTICIPANTS, previousFinishTime);
+
+        //There is now 1 participant version.
+        participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID, userId).execute().body()
+                .getItems();
+        assertEquals(1, participantVersionList.size());
+
+        // Participant version was exported to app's Synapse project.
+        RowSet particpantVersionRowSet = queryParticipantVersion(ex3Config, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
+
+        // And for study's Synapse project.
+        particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
     }
 
     @Test
@@ -433,26 +532,7 @@ public class Exporter3Test {
         // Verify the Participant Version table.
         String healthCode = flattenedAnnotationMap.get("healthCode");
         String participantVersionStr = flattenedAnnotationMap.get("participantVersion");
-        String participantVersionTableId = ex3Config.getParticipantVersionTableId();
-        String query = "SELECT * FROM " + participantVersionTableId + " WHERE healthCode='" + healthCode +
-                "' and participantVersion=" + participantVersionStr;
-        String queryJobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
-                SynapseClient.QUERY_PARTMASK, participantVersionTableId);
-
-        QueryResultBundle queryResultBundle = null;
-        for (int loops = 0; loops < 5; loops++) {
-            // Poll until result is ready.
-            Thread.sleep(1000);
-            try {
-                queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(queryJobId,
-                        participantVersionTableId);
-            } catch (SynapseResultNotReadyException ex) {
-                // Wait and try again.
-            }
-        }
-        assertNotNull(queryResultBundle, "Timed out querying for participant version");
-
-        RowSet queryRowSet = queryResultBundle.getQueryResult().getQueryResults();
+        RowSet queryRowSet = queryParticipantVersion(ex3Config, healthCode, participantVersionStr);
         List<SelectColumn> columnList = queryRowSet.getHeaders();
         assertEquals(queryRowSet.getRows().size(), 1);
         List<String> rowValueList = queryRowSet.getRows().get(0).getValues();
@@ -475,6 +555,33 @@ public class Exporter3Test {
 
         long participantModifiedOn = Long.parseLong(rowMap.get("modifiedOn"));
         assertTrue(participantModifiedOn > oneHourAgo.getMillis());
+    }
+
+    private RowSet queryParticipantVersion(Exporter3Configuration ex3Config, String healthCode,
+            String participantVersionStr) throws Exception {
+        // Query participant version table.
+        String participantVersionTableId = ex3Config.getParticipantVersionTableId();
+        String query = "SELECT * FROM " + participantVersionTableId + " WHERE healthCode='" + healthCode + "'";
+        if (participantVersionStr != null) {
+            query += " and participantVersion=" + participantVersionStr;
+        }
+        String queryJobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
+                SynapseClient.QUERY_PARTMASK, participantVersionTableId);
+
+        QueryResultBundle queryResultBundle = null;
+        for (int loops = 0; loops < 5; loops++) {
+            // Poll until result is ready.
+            Thread.sleep(1000);
+            try {
+                queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(queryJobId,
+                        participantVersionTableId);
+            } catch (SynapseResultNotReadyException ex) {
+                // Wait and try again.
+            }
+        }
+        assertNotNull(queryResultBundle, "Timed out querying for participant version");
+
+        return queryResultBundle.getQueryResult().getQueryResults();
     }
 
     private static class UploadInfo {
