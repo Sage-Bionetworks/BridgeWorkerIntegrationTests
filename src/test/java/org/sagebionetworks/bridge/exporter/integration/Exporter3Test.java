@@ -88,7 +88,7 @@ import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
-@SuppressWarnings({ "ConstantConditions", "deprecation", "OptionalGetWithoutIsPresent" })
+@SuppressWarnings({ "ConstantConditions", "deprecation" })
 public class Exporter3Test {
     private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
 
@@ -101,6 +101,7 @@ public class Exporter3Test {
     private static final String STUDY_ID = "study1";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
     private static final String WORKER_ID_BACKFILL_PARTICIPANTS = "BackfillParticipantVersionsWorker";
+    private static final String WORKER_ID_REDRIVE_PARTICIPANTS = "RedriveParticipantVersionsWorker";
 
     private static TestUser adminDeveloperWorker;
     private static String backfillBucket;
@@ -360,6 +361,72 @@ public class Exporter3Test {
         // And for study's Synapse project.
         particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy, healthCode, null);
         assertEquals(particpantVersionRowSet.getRows().size(), 1);
+    }
+
+    @Test
+    public void redriveParticipantVersion() throws Exception {
+        String userId = user.getUserId();
+
+        // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
+        // so that the test can succeed.
+        user.getClient(ForConsentedUsersApi.class).changeSharingScope(new SharingScopeForm()
+                .scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
+
+        // Get the user's healthcode.
+        StudyParticipant participant = adminDeveloperWorker.getClient(ParticipantsApi.class)
+                .getParticipantById(userId, false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // There is 1 participant version.
+        ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
+        List<ParticipantVersion> participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID,
+                userId).execute().body().getItems();
+        assertEquals(1, participantVersionList.size());
+
+        // Participant version was exported to app's Synapse project.
+        RowSet particpantVersionRowSet = queryParticipantVersion(ex3Config, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
+
+        // And for study's Synapse project.
+        particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
+
+        // Redrive participant version using redrive worker. Start by creating the list of participants to redrive
+        // (with one participant).
+        String filename = "redrive-" + getClass().getSimpleName() + "-" +
+                RandomStringUtils.randomAlphabetic(10);
+        s3Helper.writeLinesToS3(backfillBucket, filename, ImmutableList.of(healthCode));
+
+        // We need to know the previous finish time so we can determine when the worker is finished.
+        long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
+                WORKER_ID_REDRIVE_PARTICIPANTS);
+
+        // Create request.
+        String requestText = "{\n" +
+                "   \"service\":\"" + WORKER_ID_REDRIVE_PARTICIPANTS + "\",\n" +
+                "   \"body\":{\n" +
+                "       \"appId\":\"" + TEST_APP_ID + "\",\n" +
+                "       \"s3Key\":\"" + filename + "\"\n" +
+                "   }\n" +
+                "}";
+        JsonNode requestNode = DefaultObjectMapper.INSTANCE.readTree(requestText);
+        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
+
+        // Wait until the worker is finished.
+        TestUtils.pollWorkerLog(ddbWorkerLogTable, WORKER_ID_REDRIVE_PARTICIPANTS, previousFinishTime);
+
+        //There is still only 1 participant version.
+        participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID, userId).execute().body()
+                .getItems();
+        assertEquals(1, participantVersionList.size());
+
+        // However, it's been exported a second time to the app's Synapse project.
+        particpantVersionRowSet = queryParticipantVersion(ex3Config, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 2);
+
+        // And for study's Synapse project.
+        particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy, healthCode, null);
+        assertEquals(particpantVersionRowSet.getRows().size(), 2);
     }
 
     @Test
