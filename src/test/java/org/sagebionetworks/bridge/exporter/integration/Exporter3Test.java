@@ -377,6 +377,9 @@ public class Exporter3Test {
                 .getParticipantById(userId, false).execute().body();
         String healthCode = participant.getHealthCode();
 
+        // Sleep, to give the worker time to export to Synapse.
+        Thread.sleep(5000);
+
         // There is 1 participant version.
         ForWorkersApi workersApi = adminDeveloperWorker.getClient(ForWorkersApi.class);
         List<ParticipantVersion> participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID,
