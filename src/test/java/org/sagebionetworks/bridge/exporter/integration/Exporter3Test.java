@@ -504,12 +504,15 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
+        expectedMetadata.put("contentType", CONTENT_TYPE_TEXT_PLAIN);
         testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);    
     }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
-        testUpload(content, encrypted, ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
-                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
+        testUpload(content, encrypted,
+                ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE, "contentType", CONTENT_TYPE_TEXT_PLAIN),
+                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE, "contentType",
+                        CONTENT_TYPE_TEXT_PLAIN));
     }
     
     private void testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
