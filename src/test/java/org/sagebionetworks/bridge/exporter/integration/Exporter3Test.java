@@ -68,6 +68,7 @@ import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
+import org.sagebionetworks.bridge.rest.model.ClientInfo;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
@@ -102,6 +103,9 @@ public class Exporter3Test {
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
     private static final String WORKER_ID_BACKFILL_PARTICIPANTS = "BackfillParticipantVersionsWorker";
     private static final String WORKER_ID_REDRIVE_PARTICIPANTS = "RedriveParticipantVersionsWorker";
+
+    private static final String APP_NAME_FOR_USER = "app-name-for-user";
+    private static final ClientInfo CLIENT_INFO_FOR_USER = new ClientInfo().appName(APP_NAME_FOR_USER);
 
     private static TestUser adminDeveloperWorker;
     private static String backfillBucket;
@@ -156,7 +160,8 @@ public class Exporter3Test {
     @BeforeMethod
     public void before() throws Exception {
         // Note: Consent also enrolls the participant in study1.
-        user = TestUserHelper.createAndSignInUser(Exporter3Test.class, true);
+        user = new TestUserHelper.Builder(Exporter3Test.class).withClientInfo(CLIENT_INFO_FOR_USER)
+                .withConsentUser(true).createAndSignInUser();
     }
 
     @AfterMethod
@@ -715,10 +720,11 @@ public class Exporter3Test {
             assertEquals(metadataMap.get(key), expectedValues.get(key), key + " has invalid value");
         }
 
-        // Client info exists and is in JSON format.
+        // Client info exists and is in JSON format. Verify the correct app name from client info.
         String clientInfoJsonText = metadataMap.get("clientInfo");
         JsonNode jsonNode = DefaultObjectMapper.INSTANCE.readTree(clientInfoJsonText);
         assertTrue(jsonNode.isObject());
+        assertEquals(jsonNode.get("appName").textValue(), APP_NAME_FOR_USER);
 
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
