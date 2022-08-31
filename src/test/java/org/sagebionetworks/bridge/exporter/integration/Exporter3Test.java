@@ -504,15 +504,13 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        expectedMetadata.put("contentType", CONTENT_TYPE_TEXT_PLAIN);
-        testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);    
+        testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
     }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
         testUpload(content, encrypted,
-                ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE, "contentType", CONTENT_TYPE_TEXT_PLAIN),
-                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE, "contentType",
-                        CONTENT_TYPE_TEXT_PLAIN));
+                ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
+                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
     }
     
     private void testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
@@ -710,8 +708,10 @@ public class Exporter3Test {
 
     private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues)
     throws Exception {
-        assertEquals(metadataMap.size(), 6 + expectedValues.size());
+        assertEquals(metadataMap.size(), 7 + expectedValues.size());
         assertTrue(metadataMap.containsKey("healthCode"));
+        assertTrue(metadataMap.containsKey("contentType"));
+        assertEquals(metadataMap.get("contentType"), CONTENT_TYPE_TEXT_PLAIN);
         assertEquals(metadataMap.get("participantVersion"), "1");
         assertEquals(metadataMap.get("recordId"), expectedRecordId);
         for (String key : expectedValues.keySet()) {
