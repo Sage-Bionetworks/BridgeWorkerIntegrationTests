@@ -12,9 +12,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
@@ -41,6 +44,7 @@ import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
 import org.sagebionetworks.repo.model.sts.StsPermission;
+import org.sagebionetworks.repo.model.table.QueryResult;
 import org.sagebionetworks.repo.model.table.QueryResultBundle;
 import org.sagebionetworks.repo.model.table.RowSet;
 import org.sagebionetworks.repo.model.table.SelectColumn;
@@ -58,6 +62,7 @@ import org.sagebionetworks.bridge.crypto.PemUtils;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.RestUtils;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
+import org.sagebionetworks.bridge.rest.api.DemographicsApi;
 import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
@@ -69,6 +74,8 @@ import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.ClientInfo;
+import org.sagebionetworks.bridge.rest.model.Demographic;
+import org.sagebionetworks.bridge.rest.model.DemographicUser;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
@@ -510,6 +517,137 @@ public class Exporter3Test {
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
         testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+    }
+
+    @Test
+    public void demographics() throws IOException, SynapseException, InterruptedException, TimeoutException {
+        user.getClient(ForConsentedUsersApi.class)
+                .changeSharingScope(new SharingScopeForm().scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
+        user.getClient(DemographicsApi.class).saveDemographicUserSelf(STUDY_ID,
+                new DemographicUser().demographics(
+                        ImmutableMap.of(
+                                "category1",
+                                new Demographic().multipleSelect(true).values(ImmutableList.of()),
+                                "category2",
+                                new Demographic().multipleSelect(false).values(ImmutableList.of("value1"))
+                                        .units("units1"))))
+                .execute();
+
+        // wait for export
+        Thread.sleep(25000);
+
+        Map<String, String> tableIdToOrderByClause = new HashMap<>();
+        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionTableId(), "participantVersion");
+        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionDemographicsTableId(), null);
+        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionDemographicsViewId(),
+                "appId, studyId, participantVersion, demographicCategoryName, demographicValue, demographicUnits");
+        Map<String, QueryResultBundle> queryResults = selectAllFromSynapseTablesWithQueryCount(tableIdToOrderByClause,
+                100L);
+
+        // get demographics version (which is version 2 at index 1)
+        QueryResultBundle participantVersionTableResults = queryResults
+                .get(ex3ConfigForStudy.getParticipantVersionTableId());
+        QueryResult participantVersionTableResult = participantVersionTableResults.getQueryResult();
+        List<String> demographicsParticipantVersionRow = participantVersionTableResult.getQueryResults().getRows()
+                .get(1).getValues();
+
+        // check demographics table
+        QueryResultBundle demographicsTableResults = queryResults
+                .get(ex3ConfigForStudy.getParticipantVersionDemographicsTableId());
+        // check demographics table size
+        assertEquals(demographicsTableResults.getQueryCount().longValue(), 2L);
+        List<String> expectedColumnNames = ImmutableList.of("healthCode", "participantVersion", "appId", "studyId",
+                "demographicCategoryName", "demographicValue", "demographicUnits");
+        // check demographics table column names
+        assertEquals(demographicsTableResults.getQueryResult().getQueryResults().getHeaders().size(),
+                expectedColumnNames.size());
+        for (int i = 0; i < expectedColumnNames.size(); i++) {
+            assertEquals(demographicsTableResults.getQueryResult().getQueryResults().getHeaders().get(i).getName(),
+                    expectedColumnNames.get(i));
+        }
+
+        // check demographics view
+        QueryResultBundle demographicsViewResults = queryResults
+                .get(ex3ConfigForStudy.getParticipantVersionDemographicsViewId());
+        // check demographics view size
+        assertEquals(demographicsViewResults.getQueryCount().longValue(), 2L);
+        QueryResult demographicsViewResult = demographicsViewResults.getQueryResult();
+        // check demographics view values
+        List<String> expectedRow0 = new ArrayList<>(demographicsParticipantVersionRow);
+        expectedRow0.add(IntegTestUtils.TEST_APP_ID);
+        expectedRow0.add(STUDY_ID);
+        expectedRow0.add("category1");
+        expectedRow0.add(null);
+        expectedRow0.add(null);
+        assertEquals(demographicsViewResult.getQueryResults().getRows().get(0).getValues(), expectedRow0);
+        List<String> expectedRow1 = new ArrayList<>(demographicsParticipantVersionRow);
+        expectedRow1.add(IntegTestUtils.TEST_APP_ID);
+        expectedRow1.add(STUDY_ID);
+        expectedRow1.add("category2");
+        expectedRow1.add("value1");
+        expectedRow1.add("units1");
+        assertEquals(demographicsViewResult.getQueryResults().getRows().get(1).getValues(), expectedRow1);
+
+        // study save demographic user
+        // study delete demographic
+        // study delete demographic user
+        // app overwrite demographics
+        // account update
+    }
+
+    /**
+     * Requests multiple tables from Synapse simultaneously with async queries.
+     * Retries 10 times at 0.5 second intervals before throwing TimeoutException.
+     * 
+     * @param tableIdToOrderByClause A map of table ids that should be fetched to an
+     *                               order by clause for ordering the query results.
+     *                               The order by clause can be null. The order by
+     *                               clause should be a string containing column
+     *                               names separated by a comma and a space.
+     * @param limit                  The limit for number of rows.
+     * @return A map of table ids to the results for that table. The results contain
+     *         the count of the query result and the query results themselves.
+     * @throws SynapseException
+     * @throws InterruptedException
+     * @throws TimeoutException
+     */
+    private Map<String, QueryResultBundle> selectAllFromSynapseTablesWithQueryCount(
+            Map<String, String> tableIdToOrderByClause, long limit)
+            throws SynapseException, InterruptedException, TimeoutException {
+        Map<String, String> tableIdToJobId = new HashMap<>(tableIdToOrderByClause.size());
+        for (Map.Entry<String, String> entry : tableIdToOrderByClause.entrySet()) {
+            String tableId = entry.getKey();
+            String orderByClause = entry.getValue();
+            String query = "select * from " + tableId;
+            if (orderByClause != null) {
+                query += " order by " + orderByClause;
+            }
+            String jobId = synapseClient.queryTableEntityBundleAsyncStart(query, 0L, limit,
+                    SynapseClient.QUERY_PARTMASK | SynapseClient.COUNT_PARTMASK, tableId);
+            tableIdToJobId.put(tableId, jobId);
+        }
+        Map<String, QueryResultBundle> queryResults = new HashMap<>(tableIdToOrderByClause.size());
+        for (int retries = 0; retries < 20; retries++) {
+            for (Iterator<Map.Entry<String, String>> iter = tableIdToJobId.entrySet().iterator(); iter.hasNext();) {
+                Map.Entry<String, String> entry = iter.next();
+                String tableId = entry.getKey();
+                String jobId = entry.getValue();
+                try {
+                    QueryResultBundle queryResult = synapseClient.queryTableEntityBundleAsyncGet(jobId, tableId);
+                    // if we get here the query is complete
+                    queryResults.put(tableId, queryResult);
+                    iter.remove();
+                } catch (SynapseResultNotReadyException e) {
+
+                }
+
+                if (tableIdToJobId.isEmpty()) {
+                    return queryResults;
+                }
+                Thread.sleep(500);
+            }
+        }
+        throw new TimeoutException("timed out waiting for Synapse query results");
     }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
