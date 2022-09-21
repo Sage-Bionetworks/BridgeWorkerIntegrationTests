@@ -81,6 +81,7 @@ import org.sagebionetworks.bridge.rest.model.DemographicUserAssessment;
 import org.sagebionetworks.bridge.rest.model.DemographicUserAssessmentAnswer;
 import org.sagebionetworks.bridge.rest.model.DemographicUserAssessmentAnswerCollection;
 import org.sagebionetworks.bridge.rest.model.DemographicUserResponse;
+import org.sagebionetworks.bridge.rest.model.Enrollment;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
@@ -179,6 +180,8 @@ public class Exporter3Test {
         // Note: Consent also enrolls the participant in study1.
         user = new TestUserHelper.Builder(Exporter3Test.class).withClientInfo(CLIENT_INFO_FOR_USER)
                 .withConsentUser(true).createAndSignInUser();
+        adminDeveloperWorker.getClient(StudiesApi.class)
+                .enrollParticipant(STUDY_2_ID, new Enrollment().userId(user.getUserId())).execute().body();
     }
 
     @AfterMethod
@@ -585,7 +588,7 @@ public class Exporter3Test {
         researcher.getClient(DemographicsApi.class).deleteDemographicUser(STUDY_ID, user.getUserId()).execute();
 
         // wait for export
-        Thread.sleep(40000);
+        Thread.sleep(45000);
 
         // fetch synapse tables
         Map<String, String> tableIdToOrderByClause = new HashMap<>();
@@ -732,13 +735,19 @@ public class Exporter3Test {
         assertEquals(demographicsAppViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
                 appParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
 
+        // get study2 participant versions
+        QueryResultBundle study2ParticipantVersionTableResults = queryResults
+                .get(ex3ConfigForStudy2.getParticipantVersionTableId());
+        QueryResult study2ParticipantVersionTableResult = study2ParticipantVersionTableResults.getQueryResult();
+        List<Row> study2ParticipantVersionRows = study2ParticipantVersionTableResult.getQueryResults().getRows();
+
         // check study2 demographics table
         // don't need to check the values in the table because they are included in the
         // view
         QueryResultBundle demographicsStudy2TableResults = queryResults
                 .get(ex3ConfigForStudy2.getParticipantVersionDemographicsTableId());
         // check demographics table size
-        assertEquals(demographicsStudy2TableResults.getQueryCount().longValue(), 0L);
+        assertEquals(demographicsStudy2TableResults.getQueryCount().longValue(), 6L);
         verifySynapseTableColumns(demographicsStudy2TableResults.getQueryResult(),
                 ImmutableList.of("healthCode", "participantVersion", "appId", "studyId", "demographicCategoryName",
                         "demographicValue", "demographicUnits"));
@@ -747,13 +756,32 @@ public class Exporter3Test {
         QueryResultBundle demographicsStudy2ViewResults = queryResults
                 .get(ex3ConfigForStudy2.getParticipantVersionDemographicsViewId());
         // check app demographics view size
-        assertEquals(demographicsStudy2ViewResults.getQueryCount().longValue(), 0L);
+        assertEquals(demographicsStudy2ViewResults.getQueryCount().longValue(), 6L);
         QueryResult demographicsStudy2ViewResult = demographicsStudy2ViewResults.getQueryResult();
         // check demographics view column names
         verifySynapseTableColumns(demographicsStudy2ViewResult,
                 ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
                         "languages", "sharingScope", "studyMemberships", "clientTimeZone", "appId", "studyId",
                         "demographicCategoryName", "demographicValue", "demographicUnits"));
+        // check demographics view values
+        // should only have app demographics (study demographics should not be in study2
+        // view)
+        List<Row> demographicsStudy2ViewResultRows = demographicsStudy2ViewResult.getQueryResults().getRows();
+        // version 5
+        assertEquals(demographicsStudy2ViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+        assertEquals(demographicsStudy2ViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+        // version 6
+        assertEquals(demographicsStudy2ViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+        assertEquals(demographicsStudy2ViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+        // version 7
+        assertEquals(demographicsStudy2ViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+        assertEquals(demographicsStudy2ViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
+                study2ParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
     }
 
     private void verifySynapseTableColumns(QueryResult queryResult, List<String> expectedColumnNames) {
@@ -764,7 +792,8 @@ public class Exporter3Test {
         }
     }
 
-    private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum, String appId, String studyId, String categoryName, String value, String units) {
+    private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum, String appId,
+            String studyId, String categoryName, String value, String units) {
         // the first part of each row is the same as in the participant versions table
         // participant versions are indexed from 1
         List<String> expectedRow = new ArrayList<>(participantVersionRows.get(versionNum - 1).getValues());
