@@ -554,6 +554,14 @@ public class Exporter3Test {
                                 "category0",
                                 new Demographic().multipleSelect(true).values(ImmutableList.of("value0")))))
                 .execute().body();
+        // study overwrite with exact same demographic user (should not create a new
+        // version because last version is identical)
+        researcher.getClient(DemographicsApi.class).saveDemographicUser(STUDY_ID, user.getUserId(),
+                new DemographicUser().demographics(
+                        ImmutableMap.of(
+                                "category0",
+                                new Demographic().multipleSelect(true).values(ImmutableList.of("value0")))))
+                .execute().body();
         // study overwrite demographic user self (version 3)
         DemographicUserResponse overwritingDemographicUser = user
                 .getClient(DemographicsApi.class).saveDemographicUserSelf(STUDY_ID,
