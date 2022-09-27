@@ -802,9 +802,19 @@ public class Exporter3Test {
 
     private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum, String appId,
             String studyId, String categoryName, String value, String units) {
+        Row participantVersionRow = null;
+        for (Row row : participantVersionRows) {
+            // version num is at column index 1 in participant versions table
+            if (row.getValues().get(1).equals(String.valueOf(versionNum))) {
+                participantVersionRow = row;
+            }
+        }
+        if (participantVersionRow == null) {
+            throw new IllegalArgumentException(
+                    "the specified version " + versionNum + " does not exist in the participant versions table");
+        }
         // the first part of each row is the same as in the participant versions table
-        // participant versions are indexed from 1
-        List<String> expectedRow = new ArrayList<>(participantVersionRows.get(versionNum - 1).getValues());
+        List<String> expectedRow = new ArrayList<>(participantVersionRow.getValues());
         expectedRow.add(appId);
         expectedRow.add(studyId);
         expectedRow.add(categoryName);
@@ -815,7 +825,6 @@ public class Exporter3Test {
 
     /**
      * Requests multiple tables from Synapse simultaneously with async queries.
-     * Retries 10 times at 0.5 second intervals before throwing TimeoutException.
      * 
      * @param tableIdToOrderByClause A map of table ids that should be fetched to an
      *                               order by clause for ordering the query results.
