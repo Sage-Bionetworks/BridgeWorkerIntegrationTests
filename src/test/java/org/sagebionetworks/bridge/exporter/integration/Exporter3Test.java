@@ -383,6 +383,9 @@ public class Exporter3Test {
         // Wait until the worker is finished.
         TestUtils.pollWorkerLog(ddbWorkerLogTable, WORKER_ID_BACKFILL_PARTICIPANTS, previousFinishTime);
 
+        // Also need to wait for export
+        Thread.sleep(30000);
+
         //There is now 1 participant version.
         participantVersionList = workersApi.getAllParticipantVersionsForUser(TEST_APP_ID, userId).execute().body()
                 .getItems();
