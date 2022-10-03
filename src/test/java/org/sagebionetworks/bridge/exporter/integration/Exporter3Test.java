@@ -118,7 +118,7 @@ public class Exporter3Test {
     private static final String WORKER_ID_BACKFILL_PARTICIPANTS = "BackfillParticipantVersionsWorker";
     private static final String WORKER_ID_REDRIVE_PARTICIPANTS = "RedriveParticipantVersionsWorker";
     private static final String PARTICIPANT_VERSIONS_TABLE_ORDER_BY = "participantVersion";
-    private static final String PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY = "participantVersion, appId, studyId, demographicCategoryName, demographicValue, demographicUnits";
+    private static final String PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY = "participantVersion, studyId, demographicCategoryName, demographicValue, demographicUnits";
 
     private static final String APP_NAME_FOR_USER = "app-name-for-user";
     private static final ClientInfo CLIENT_INFO_FOR_USER = new ClientInfo().appName(APP_NAME_FOR_USER);
@@ -638,7 +638,7 @@ public class Exporter3Test {
         assertEquals(demographicsStudyTableResults.getQueryCount().longValue(), 12L);
         // check demographics table column names
         verifySynapseTableColumns(demographicsStudyTableResults.getQueryResult(),
-                ImmutableList.of("healthCode", "participantVersion", "appId", "studyId", "demographicCategoryName",
+                ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
                         "demographicValue", "demographicUnits"));
 
         // check study demographics view
@@ -650,40 +650,40 @@ public class Exporter3Test {
         // check study demographics view column names
         verifySynapseTableColumns(demographicsStudyViewResult,
                 ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
-                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "appId", "studyId",
+                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
                         "demographicCategoryName", "demographicValue", "demographicUnits"));
         // check study demographics view values
         List<Row> demographicsStudyViewResultRows = demographicsStudyViewResult.getQueryResults().getRows();
         // version 2
         assertEquals(demographicsStudyViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 2, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category0", "value0", null));
+                studyParticipantVersionRows, 2, STUDY_ID, "category0", "value0", null));
         // version 3
         assertEquals(demographicsStudyViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 3, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category1", null, null));
+                studyParticipantVersionRows, 3, STUDY_ID, "category1", null, null));
         assertEquals(demographicsStudyViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 3, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                studyParticipantVersionRows, 3, STUDY_ID, "category2", "value1", "units1"));
         // version 4
         assertEquals(demographicsStudyViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 4, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                studyParticipantVersionRows, 4, STUDY_ID, "category2", "value1", "units1"));
         // version 5
         assertEquals(demographicsStudyViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                studyParticipantVersionRows, 5, null, "category3", "value2", null));
         assertEquals(demographicsStudyViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                studyParticipantVersionRows, 5, null, "category3", "value3", null));
         assertEquals(demographicsStudyViewResultRows.get(6).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                studyParticipantVersionRows, 5, STUDY_ID, "category2", "value1", "units1"));
         // version 6
         assertEquals(demographicsStudyViewResultRows.get(7).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                studyParticipantVersionRows, 6, null, "category3", "value2", null));
         assertEquals(demographicsStudyViewResultRows.get(8).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                studyParticipantVersionRows, 6, null, "category3", "value3", null));
         assertEquals(demographicsStudyViewResultRows.get(9).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                studyParticipantVersionRows, 6, STUDY_ID, "category2", "value1", "units1"));
         // version 7
         assertEquals(demographicsStudyViewResultRows.get(10).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                studyParticipantVersionRows, 7, null, "category3", "value2", null));
         assertEquals(demographicsStudyViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                studyParticipantVersionRows, 7, null, "category3", "value3", null));
 
         // get app participant versions
         QueryResultBundle appParticipantVersionTableResults = queryResults
@@ -699,7 +699,7 @@ public class Exporter3Test {
         // check demographics table size
         assertEquals(demographicsAppTableResults.getQueryCount().longValue(), 12L);
         verifySynapseTableColumns(demographicsAppTableResults.getQueryResult(),
-                ImmutableList.of("healthCode", "participantVersion", "appId", "studyId", "demographicCategoryName",
+                ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
                         "demographicValue", "demographicUnits"));
 
         // check app demographics view
@@ -711,40 +711,40 @@ public class Exporter3Test {
         // check demographics view column names
         verifySynapseTableColumns(demographicsAppViewResult,
                 ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
-                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "appId", "studyId",
+                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
                         "demographicCategoryName", "demographicValue", "demographicUnits"));
         // check app demographics view values
         List<Row> demographicsAppViewResultRows = demographicsAppViewResult.getQueryResults().getRows();
         // version 2
         assertEquals(demographicsAppViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 2, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category0", "value0", null));
+                appParticipantVersionRows, 2, STUDY_ID, "category0", "value0", null));
         // version 3
         assertEquals(demographicsAppViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 3, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category1", null, null));
+                appParticipantVersionRows, 3, STUDY_ID, "category1", null, null));
         assertEquals(demographicsAppViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 3, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                appParticipantVersionRows, 3, STUDY_ID, "category2", "value1", "units1"));
         // version 4
         assertEquals(demographicsAppViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 4, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                appParticipantVersionRows, 4, STUDY_ID, "category2", "value1", "units1"));
         // version 5
         assertEquals(demographicsAppViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                appParticipantVersionRows, 5, null, "category3", "value2", null));
         assertEquals(demographicsAppViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                appParticipantVersionRows, 5, null, "category3", "value3", null));
         assertEquals(demographicsAppViewResultRows.get(6).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                appParticipantVersionRows, 5, STUDY_ID, "category2", "value1", "units1"));
         // version 6
         assertEquals(demographicsAppViewResultRows.get(7).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                appParticipantVersionRows, 6, null, "category3", "value2", null));
         assertEquals(demographicsAppViewResultRows.get(8).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                appParticipantVersionRows, 6, null, "category3", "value3", null));
         assertEquals(demographicsAppViewResultRows.get(9).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, STUDY_ID, "category2", "value1", "units1"));
+                appParticipantVersionRows, 6, STUDY_ID, "category2", "value1", "units1"));
         // version 7
         assertEquals(demographicsAppViewResultRows.get(10).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                appParticipantVersionRows, 7, null, "category3", "value2", null));
         assertEquals(demographicsAppViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                appParticipantVersionRows, 7, null, "category3", "value3", null));
 
         // get study2 participant versions
         QueryResultBundle study2ParticipantVersionTableResults = queryResults
@@ -760,7 +760,7 @@ public class Exporter3Test {
         // check demographics table size
         assertEquals(demographicsStudy2TableResults.getQueryCount().longValue(), 6L);
         verifySynapseTableColumns(demographicsStudy2TableResults.getQueryResult(),
-                ImmutableList.of("healthCode", "participantVersion", "appId", "studyId", "demographicCategoryName",
+                ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
                         "demographicValue", "demographicUnits"));
 
         // check study2 demographics view
@@ -772,7 +772,7 @@ public class Exporter3Test {
         // check demographics view column names
         verifySynapseTableColumns(demographicsStudy2ViewResult,
                 ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
-                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "appId", "studyId",
+                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
                         "demographicCategoryName", "demographicValue", "demographicUnits"));
         // check demographics view values
         // should only have app demographics (study demographics should not be in study2
@@ -780,19 +780,19 @@ public class Exporter3Test {
         List<Row> demographicsStudy2ViewResultRows = demographicsStudy2ViewResult.getQueryResults().getRows();
         // version 5
         assertEquals(demographicsStudy2ViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                study2ParticipantVersionRows, 5, null, "category3", "value2", null));
         assertEquals(demographicsStudy2ViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 5, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                study2ParticipantVersionRows, 5, null, "category3", "value3", null));
         // version 6
         assertEquals(demographicsStudy2ViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                study2ParticipantVersionRows, 6, null, "category3", "value2", null));
         assertEquals(demographicsStudy2ViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 6, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                study2ParticipantVersionRows, 6, null, "category3", "value3", null));
         // version 7
         assertEquals(demographicsStudy2ViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value2", null));
+                study2ParticipantVersionRows, 7, null, "category3", "value2", null));
         assertEquals(demographicsStudy2ViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 7, IntegTestUtils.TEST_APP_ID, null, "category3", "value3", null));
+                study2ParticipantVersionRows, 7, null, "category3", "value3", null));
     }
 
     private void verifySynapseTableColumns(QueryResult queryResult, List<String> expectedColumnNames) {
@@ -803,7 +803,7 @@ public class Exporter3Test {
         }
     }
 
-    private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum, String appId,
+    private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum,
             String studyId, String categoryName, String value, String units) {
         Row participantVersionRow = null;
         for (Row row : participantVersionRows) {
@@ -818,7 +818,6 @@ public class Exporter3Test {
         }
         // the first part of each row is the same as in the participant versions table
         List<String> expectedRow = new ArrayList<>(participantVersionRow.getValues());
-        expectedRow.add(appId);
         expectedRow.add(studyId);
         expectedRow.add(categoryName);
         expectedRow.add(value);
