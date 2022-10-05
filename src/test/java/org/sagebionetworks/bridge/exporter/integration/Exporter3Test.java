@@ -124,6 +124,7 @@ public class Exporter3Test {
     private static final ClientInfo CLIENT_INFO_FOR_USER = new ClientInfo().appName(APP_NAME_FOR_USER);
 
     private static TestUser adminDeveloperWorker;
+    private static TestUser researcher;
     private static String backfillBucket;
     private static Table ddbWorkerLogTable;
     private static Exporter3Configuration ex3Config;
@@ -164,6 +165,9 @@ public class Exporter3Test {
         // Create admin account.
         adminDeveloperWorker = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.ADMIN,
                 Role.DEVELOPER, Role.WORKER);
+
+        // Create researcher account
+        researcher = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.RESEARCHER);
 
         // Wipe the Exporter 3 Config and re-create it.
         deleteEx3Resources();
@@ -548,7 +552,6 @@ public class Exporter3Test {
     public void demographics() throws IOException, SynapseException, InterruptedException, TimeoutException {
         user.getClient(ForConsentedUsersApi.class)
                 .changeSharingScope(new SharingScopeForm().scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
-        TestUser researcher = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.RESEARCHER);
 
         // study save demographic user (version 2)
         researcher.getClient(DemographicsApi.class).saveDemographicUser(STUDY_ID, user.getUserId(),
