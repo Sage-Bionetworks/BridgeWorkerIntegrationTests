@@ -293,16 +293,6 @@ public class Exporter3Test {
         // Storage locations are idempotent, so no need to delete that.
     }
 
-    @Test
-    public void foo() throws IOException {
-        AppConfigsApi appConfigsApi = adminDeveloperWorker.getClient(AppConfigsApi.class);
-        System.out.println(appConfigsApi.getAppConfigElement(APP_CONFIG_ELEMENT_ID_ENUM_VALIDATION, 1L).execute().body());
-        System.out.println(appConfigsApi.getAppConfigElement(APP_CONFIG_ELEMENT_ID_NUMBER_VALIDATION, 1L).execute().body());
-        for (String appConfigElementId : APP_CONFIG_ELEMENTS_TO_DELETE) {
-            appConfigsApi.deleteAllAppConfigElementRevisions(appConfigElementId, true).execute();
-        }
-    }
-
     // Note: There are other test cases, for example, if the participant uploads and then turns off sharing before the
     // upload is exported. This might happen if Synapse is down for maintenance.
     // This specific test will test no_sharing and redrives.
