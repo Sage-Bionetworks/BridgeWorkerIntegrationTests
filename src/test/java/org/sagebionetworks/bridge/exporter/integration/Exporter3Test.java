@@ -138,6 +138,7 @@ public class Exporter3Test {
 
     private static TestUser adminDeveloperWorker;
     private static TestUser researcher;
+    private static TestUser studyDesigner;
     private static String backfillBucket;
     private static Table ddbWorkerLogTable;
     private static Exporter3Configuration ex3Config;
@@ -181,6 +182,9 @@ public class Exporter3Test {
 
         // Create researcher account
         researcher = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.RESEARCHER);
+
+        // Create study designer account
+        studyDesigner = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.STUDY_DESIGNER);
 
         // Wipe the Exporter 3 Config and re-create it.
         deleteEx3Resources();
@@ -620,7 +624,7 @@ public class Exporter3Test {
         DemographicValuesValidationConfig numberRangeConfig = new DemographicValuesValidationConfig()
                 .validationType(ValidationTypeEnum.NUMBER_RANGE)
                 .validationRules(new DemographicValuesNumberRangeValidationRules().min(-20.0).max(20.0));
-        researcher.getClient(DemographicsApi.class)
+        studyDesigner.getClient(DemographicsApi.class)
                 .saveDemographicsValidationConfig(STUDY_ID, NUMBER_VALIDATION_CATEGORY, numberRangeConfig).execute();
         DemographicUser numberValidationDemographicUser = new DemographicUser()
                 .demographics(
@@ -632,11 +636,10 @@ public class Exporter3Test {
         // add study demographics validation for enums and upload invalid demographics
         // (version 8)
         DemographicValuesEnumValidationRules enumRules = new DemographicValuesEnumValidationRules();
-        enumRules.put("en",
-                ImmutableList.of("foo", "bar"));
+        enumRules.put("en", ImmutableList.of("foo", "bar"));
         DemographicValuesValidationConfig enumConfig = new DemographicValuesValidationConfig()
                 .validationType(ValidationTypeEnum.ENUM).validationRules(enumRules);
-        researcher.getClient(DemographicsApi.class)
+        studyDesigner.getClient(DemographicsApi.class)
                 .saveDemographicsValidationConfig(STUDY_ID, ENUM_VALIDATION_CATEGORY, enumConfig).execute();
         DemographicUser enumValidationDemographicUser = new DemographicUser()
                 .demographics(
