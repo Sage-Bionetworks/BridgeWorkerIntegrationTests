@@ -19,12 +19,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
+import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.sns.AmazonSNS;
+import com.amazonaws.services.sns.AmazonSNSClientBuilder;
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.AmazonSQSClientBuilder;
+import com.amazonaws.services.sqs.model.Message;
+import com.amazonaws.services.sqs.model.PurgeQueueRequest;
+import com.amazonaws.services.sqs.model.ReceiveMessageRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -82,7 +90,10 @@ import org.sagebionetworks.bridge.rest.model.DemographicUserAssessmentAnswer;
 import org.sagebionetworks.bridge.rest.model.DemographicUserAssessmentAnswerCollection;
 import org.sagebionetworks.bridge.rest.model.DemographicUserResponse;
 import org.sagebionetworks.bridge.rest.model.Enrollment;
+import org.sagebionetworks.bridge.rest.model.ExportNotificationRecordInfo;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
+import org.sagebionetworks.bridge.rest.model.ExporterSubscriptionRequest;
+import org.sagebionetworks.bridge.rest.model.ExporterSubscriptionResult;
 import org.sagebionetworks.bridge.rest.model.HealthDataRecordEx3;
 import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
 import org.sagebionetworks.bridge.rest.model.Role;
@@ -132,12 +143,17 @@ public class Exporter3Test {
     private static Exporter3Configuration ex3ConfigForStudy2;
     private static String rawDataBucket;
     private static S3Helper s3Helper;
+    private static AmazonSNS snsClient;
+    private static AmazonSQS sqsClient;
     private static SqsHelper sqsHelper;
     private static SynapseClient synapseClient;
+    private static String testQueueArn;
+    private static String testQueueUrl;
     private static String workerSqsUrl;
 
     private TestUser user;
     private Schedule2 schedule;
+    private List<String> subscriptionArnList;
     private Assessment assessment;
 
     @BeforeClass
@@ -156,8 +172,14 @@ public class Exporter3Test {
         s3Helper = new S3Helper();
         s3Helper.setS3Client(s3Client);
 
+        snsClient = AmazonSNSClientBuilder.standard().withCredentials(awsCredentialsProvider).build();
+
         workerSqsUrl = config.get("worker.request.sqs.queue.url");
+        sqsClient = AmazonSQSClientBuilder.standard().withCredentials(awsCredentialsProvider).build();
         sqsHelper = TestUtils.getSqsHelper(awsCredentialsProvider);
+
+        testQueueArn = config.get("integ.test.queue.arn");
+        testQueueUrl = config.get("integ.test.queue.url");
 
         // Set up SynapseClient.
         synapseClient = TestUtils.getSynapseClient(config);
@@ -171,6 +193,14 @@ public class Exporter3Test {
 
         // Wipe the Exporter 3 Config and re-create it.
         deleteEx3Resources();
+
+        // Clear queue. Note that PurgeQueue can only be called at most once every 60 seconds, or it will throw an
+        // exception.
+        PurgeQueueRequest purgeQueueRequest = new PurgeQueueRequest(testQueueUrl);
+        sqsClient.purgeQueue(purgeQueueRequest);
+
+        // Wait one second to ensure the queue is cleared.
+        Thread.sleep(1000);
 
         // Init Exporter 3.
         ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
@@ -186,10 +216,16 @@ public class Exporter3Test {
                 .withConsentUser(true).createAndSignInUser();
         adminDeveloperWorker.getClient(StudiesApi.class)
                 .enrollParticipant(STUDY_2_ID, new Enrollment().userId(user.getUserId())).execute().body();
+
+        subscriptionArnList = new ArrayList<>();
     }
 
     @AfterMethod
     public void after() throws Exception {
+        for (String subscriptionArn : subscriptionArnList) {
+            snsClient.unsubscribe(subscriptionArn);
+        }
+
         if (user != null) {
             user.signOutAndDeleteUser();
         }
@@ -211,6 +247,9 @@ public class Exporter3Test {
 
         if (adminDeveloperWorker != null) {
             adminDeveloperWorker.signOutAndDeleteUser();
+        }
+        if (researcher != null) {
+            researcher.signOutAndDeleteUser();
         }
     }
 
@@ -272,6 +311,16 @@ public class Exporter3Test {
         }
 
         // Storage locations are idempotent, so no need to delete that.
+
+        // Delete the Export Notification SNS topic.
+        String exportNotificationTopicArn = ex3Config.getExportNotificationTopicArn();
+        if (exportNotificationTopicArn != null) {
+            try {
+                snsClient.deleteTopic(exportNotificationTopicArn);
+            } catch (AmazonClientException ex) {
+                LOG.error("Error deleting topic " + exportNotificationTopicArn);
+            }
+        }
     }
 
     // Note: There are other test cases, for example, if the participant uploads and then turns off sharing before the
@@ -898,14 +947,30 @@ public class Exporter3Test {
         participant.setSharingScope(SharingScope.ALL_QUALIFIED_RESEARCHERS);
         participantsApi.updateUsersParticipantRecord(participant).execute();
 
+        // Subscribe to export notifications for app and study.
+        ForAdminsApi adminsApi = adminDeveloperWorker.getClient(ForAdminsApi.class);
+        ExporterSubscriptionRequest exporterSubscriptionRequest = new ExporterSubscriptionRequest();
+        exporterSubscriptionRequest.putAttributesItem("RawMessageDelivery", "true");
+        exporterSubscriptionRequest.setEndpoint(testQueueArn);
+        exporterSubscriptionRequest.setProtocol("sqs");
+        ExporterSubscriptionResult exporterSubscriptionResult = adminsApi.subscribeToExportNotificationsForApp(
+                exporterSubscriptionRequest).execute().body();
+        subscriptionArnList.add(exporterSubscriptionResult.getSubscriptionArn());
+
+        exporterSubscriptionResult = adminsApi.subscribeToExportNotificationsForStudy(STUDY_ID,
+                exporterSubscriptionRequest).execute().body();
+        subscriptionArnList.add(exporterSubscriptionResult.getSubscriptionArn());
+
         // Upload file to Bridge.
         UploadInfo uploadInfo = uploadFile(content, encrypted, userMetadata, expectedMetadata);
         String filename = uploadInfo.filename;
         String uploadId = uploadInfo.uploadId;
 
         // Verify Synapse and S3.
-        verifyUpload(ex3Config, uploadId, filename, false, expectedMetadata);
-        verifyUpload(ex3ConfigForStudy, uploadId, filename, true, expectedMetadata);
+        ExportNotificationRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
+                false, expectedMetadata);
+        ExportNotificationRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
+                true, expectedMetadata);
 
         // Verify the record in Bridge.
         ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
@@ -923,9 +988,83 @@ public class Exporter3Test {
 
         DateTime fiftyMinsAfter = DateTime.now().plusMinutes(50);
         assertTrue(record.getDownloadExpiration().isAfter(fiftyMinsAfter));
+
+        // Receive notifications. Because we use a Standard queue and not an SQS queue, the messages can arrive in any
+        // order.
+        boolean foundAppNotification = false;
+        boolean foundStudyNotification = false;
+
+        ReceiveMessageRequest receiveMessageRequest = new ReceiveMessageRequest();
+        receiveMessageRequest.setQueueUrl(testQueueUrl);
+        receiveMessageRequest.setWaitTimeSeconds(10);
+        receiveMessageRequest.setMaxNumberOfMessages(2);
+
+        // Even with setMaxNumberOfMessages(2), SQS may return only 1 result. Call this in a loop until we have 2 total
+        // messages.
+        List<Message> allResultsList = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            List<Message> resultList = sqsClient.receiveMessage(receiveMessageRequest).getMessages();
+            allResultsList.addAll(resultList);
+            if (allResultsList.size() >= 2) {
+                break;
+            }
+        }
+        assertTrue(allResultsList.size() >= 2);
+        for (Message exportNotificationResult : allResultsList) {
+            String exportNotificationJsonText = exportNotificationResult.getBody();
+            JsonNode exportNotificationNode = DefaultObjectMapper.INSTANCE.readTree(exportNotificationJsonText);
+            if ("ExportToAppNotification".equals(exportNotificationNode.get("type").textValue())) {
+                foundAppNotification = true;
+                assertEquals(exportNotificationNode.get("appId").textValue(), TEST_APP_ID);
+                assertEquals(exportNotificationNode.get("recordId").textValue(), uploadId);
+
+                assertEquals(exportNotificationNode.get("record").get("parentProjectId").textValue(),
+                        appRecordInfo.getParentProjectId());
+                assertEquals(exportNotificationNode.get("record").get("rawFolderId").textValue(),
+                        appRecordInfo.getRawFolderId());
+                assertEquals(exportNotificationNode.get("record").get("fileEntityId").textValue(),
+                        appRecordInfo.getFileEntityId());
+                assertEquals(exportNotificationNode.get("record").get("s3Bucket").textValue(),
+                        appRecordInfo.getS3Bucket());
+                assertEquals(exportNotificationNode.get("record").get("s3Key").textValue(),
+                        appRecordInfo.getS3Key());
+
+                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("parentProjectId").textValue(),
+                        studyRecordInfo.getParentProjectId());
+                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("rawFolderId").textValue(),
+                        studyRecordInfo.getRawFolderId());
+                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("fileEntityId").textValue(),
+                        studyRecordInfo.getFileEntityId());
+                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("s3Bucket").textValue(),
+                        studyRecordInfo.getS3Bucket());
+                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("s3Key").textValue(),
+                        studyRecordInfo.getS3Key());
+
+                // Don't check study2. Most studies export to both studies, but a few only export to study1.
+            } else if ("ExportToStudyNotification".equals(exportNotificationNode.get("type").textValue())) {
+                foundStudyNotification = true;
+                assertEquals(exportNotificationNode.get("appId").textValue(), TEST_APP_ID);
+                assertEquals(exportNotificationNode.get("studyId").textValue(), STUDY_ID);
+                assertEquals(exportNotificationNode.get("recordId").textValue(), uploadId);
+
+                assertEquals(exportNotificationNode.get("parentProjectId").textValue(),
+                        studyRecordInfo.getParentProjectId());
+                assertEquals(exportNotificationNode.get("rawFolderId").textValue(),
+                        studyRecordInfo.getRawFolderId());
+                assertEquals(exportNotificationNode.get("fileEntityId").textValue(),
+                        studyRecordInfo.getFileEntityId());
+                assertEquals(exportNotificationNode.get("s3Bucket").textValue(),
+                        studyRecordInfo.getS3Bucket());
+                assertEquals(exportNotificationNode.get("s3Key").textValue(),
+                        studyRecordInfo.getS3Key());
+            }
+        }
+
+        assertTrue(foundAppNotification, "Found app notification");
+        assertTrue(foundStudyNotification, "Found study notification");
     }
 
-    private void verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
+    private ExportNotificationRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
             Map<String,String> expectedMetadata) throws Exception {
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
@@ -1003,6 +1142,15 @@ public class Exporter3Test {
 
         long participantModifiedOn = Long.parseLong(rowMap.get("modifiedOn"));
         assertTrue(participantModifiedOn > oneHourAgo.getMillis());
+
+        // Return the record info, so that we can verify notifications later on in our test.
+        ExportNotificationRecordInfo recordInfo = new ExportNotificationRecordInfo();
+        recordInfo.setParentProjectId(ex3Config.getProjectId());
+        recordInfo.setRawFolderId(todayFolderId);
+        recordInfo.setFileEntityId(exportedFileId);
+        recordInfo.setS3Bucket(rawDataBucket);
+        recordInfo.setS3Key(expectedS3Key);
+        return recordInfo;
     }
 
     private RowSet queryParticipantVersion(Exporter3Configuration ex3Config, String healthCode,
