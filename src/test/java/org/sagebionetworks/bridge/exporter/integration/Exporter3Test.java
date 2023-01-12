@@ -273,6 +273,9 @@ public class Exporter3Test {
         if (researcher != null) {
             researcher.signOutAndDeleteUser();
         }
+        if (studyDesigner != null) {
+            studyDesigner.signOutAndDeleteUser();
+        }
     }
 
     private static void deleteEx3Resources() throws IOException {
@@ -716,7 +719,7 @@ public class Exporter3Test {
                 .execute();
 
         // wait for export
-        Thread.sleep(45000);
+        Thread.sleep(60000);
 
         // fetch synapse tables
         Map<String, String> tableIdToOrderByClause = new HashMap<>();
