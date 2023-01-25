@@ -14,10 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
@@ -52,7 +51,6 @@ import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
 import org.sagebionetworks.repo.model.sts.StsPermission;
-import org.sagebionetworks.repo.model.table.QueryResult;
 import org.sagebionetworks.repo.model.table.QueryResultBundle;
 import org.sagebionetworks.repo.model.table.Row;
 import org.sagebionetworks.repo.model.table.RowSet;
@@ -93,6 +91,7 @@ import org.sagebionetworks.bridge.rest.model.DemographicUserResponse;
 import org.sagebionetworks.bridge.rest.model.DemographicValuesEnumValidationRules;
 import org.sagebionetworks.bridge.rest.model.DemographicValuesNumberRangeValidationRules;
 import org.sagebionetworks.bridge.rest.model.DemographicValuesValidationConfig;
+import org.sagebionetworks.bridge.rest.model.DemographicValuesValidationConfig.ValidationTypeEnum;
 import org.sagebionetworks.bridge.rest.model.Enrollment;
 import org.sagebionetworks.bridge.rest.model.ExportNotificationRecordInfo;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
@@ -111,7 +110,6 @@ import org.sagebionetworks.bridge.rest.model.TimeWindow;
 import org.sagebionetworks.bridge.rest.model.Timeline;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
-import org.sagebionetworks.bridge.rest.model.DemographicValuesValidationConfig.ValidationTypeEnum;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.user.TestUser;
@@ -133,8 +131,6 @@ public class Exporter3Test {
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
     private static final String WORKER_ID_BACKFILL_PARTICIPANTS = "BackfillParticipantVersionsWorker";
     private static final String WORKER_ID_REDRIVE_PARTICIPANTS = "RedriveParticipantVersionsWorker";
-    private static final String PARTICIPANT_VERSIONS_TABLE_ORDER_BY = "participantVersion";
-    private static final String PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY = "participantVersion, studyId, demographicCategoryName, demographicValue, demographicUnits, demographicInvalidity";
     private static final String DEMOGRAPHICS_VALIDATION_APP_CONFIG_PREFIX = "bridge-validation-demographics-values-";
     private static final String ENUM_VALIDATION_CATEGORY = "enumValidationCategory";
     private static final String NUMBER_VALIDATION_CATEGORY = "numberValidationCategory";
@@ -623,9 +619,27 @@ public class Exporter3Test {
     }
 
     @Test
-    public void demographics() throws IOException, SynapseException, InterruptedException, TimeoutException {
+    public void demographics() throws IOException, SynapseException, InterruptedException {
         user.getClient(ForConsentedUsersApi.class)
                 .changeSharingScope(new SharingScopeForm().scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
+
+        // Get the user's healthcode.
+        StudyParticipant participant = adminDeveloperWorker.getClient(ParticipantsApi.class)
+                .getParticipantById(user.getUserId(), false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // Verify version 1. There are no demographics yet, but this makes sure we wait for version 1 to finish before
+        // adding version 2. Just verify that one row exists.
+        // For whatever reason, the Participant Version Worker often takes up to 30 seconds to complete for version 1.
+        Thread.sleep(30000);
+        RowSet particpantVersionRowSet = queryParticipantVersion(ex3Config, healthCode, "1");
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
+
+        particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy, healthCode, "1");
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
+
+        particpantVersionRowSet = queryParticipantVersion(ex3ConfigForStudy2, healthCode, "1");
+        assertEquals(particpantVersionRowSet.getRows().size(), 1);
 
         // study save demographic user (version 2)
         researcher.getClient(DemographicsApi.class).saveDemographicUser(STUDY_ID, user.getUserId(),
@@ -642,6 +656,19 @@ public class Exporter3Test {
                                 "category0",
                                 new Demographic().multipleSelect(true).values(ImmutableList.of("value0")))))
                 .execute().body();
+
+        // Verify version 2.
+        // Subsequent versions only take about 10 seconds in the Participant Version Worker, for whatever reason.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version2 = new ArrayList<>();
+        Map<String, String> expectedStudy1Version2Row0 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
+                "category0", "value0", null, null);
+        expectedStudy1Version2.add(expectedStudy1Version2Row0);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 2, expectedStudy1Version2);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 2, expectedStudy1Version2);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 2, ImmutableList.of());
+
         // study overwrite demographic user self (version 3)
         DemographicUserResponse overwritingDemographicUser = user
                 .getClient(DemographicsApi.class).saveDemographicUserSelf(STUDY_ID,
@@ -653,9 +680,35 @@ public class Exporter3Test {
                                         new Demographic().multipleSelect(false).values(ImmutableList.of("value1"))
                                                 .units("units1"))))
                 .execute().body();
+
+        // Verify version 3.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version3 = new ArrayList<>();
+        Map<String, String> expectedStudy1Version3Row0 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
+                "category1", null, null, null);
+        expectedStudy1Version3.add(expectedStudy1Version3Row0);
+
+        Map<String, String> expectedStudy1Version3Row1 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
+                "category2", "value1", "units1", null);
+        expectedStudy1Version3.add(expectedStudy1Version3Row1);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 3, expectedStudy1Version3);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 3, expectedStudy1Version3);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 3, ImmutableList.of());
+
         // study delete demographic (version 4)
         researcher.getClient(DemographicsApi.class).deleteDemographic(STUDY_ID, user.getUserId(),
                 overwritingDemographicUser.getDemographics().get("category1").getId()).execute();
+
+        // Verify version 4.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version4 = new ArrayList<>();
+        expectedStudy1Version4.add(expectedStudy1Version3Row1);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 4, expectedStudy1Version4);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 4, expectedStudy1Version4);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 4, ImmutableList.of());
+
         // app save demographics assessment (version 5)
         adminDeveloperWorker.getClient(DemographicsApi.class)
                 .saveDemographicUserAssessmentAppLevel(user.getUserId(),
@@ -665,12 +718,41 @@ public class Exporter3Test {
                                                 .identifier("category3")
                                                 .value(ImmutableList.of("value2", "value3")))))))
                 .execute().body();
+
+        // Verify version 5.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version5 = new ArrayList<>();
+        Map<String, String> expectedStudy1Version5Row0 = makeExpectedDemographicsViewRowValueMap(null,
+                "category3", "value2", null, null);
+        expectedStudy1Version5.add(expectedStudy1Version5Row0);
+
+        Map<String, String> expectedStudy1Version5Row1 = makeExpectedDemographicsViewRowValueMap(null,
+                "category3", "value3", null, null);
+        expectedStudy1Version5.add(expectedStudy1Version5Row1);
+
+        expectedStudy1Version5.add(expectedStudy1Version3Row1);
+
+        List<Map<String, String>> expectedStudy2Version5 = new ArrayList<>();
+        expectedStudy2Version5.add(expectedStudy1Version5Row0);
+        expectedStudy2Version5.add(expectedStudy1Version5Row1);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 5, expectedStudy1Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 5, expectedStudy1Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 5, expectedStudy2Version5);
+
         // account update (should trigger demographics export also) (version 6)
-        StudyParticipant participant = adminDeveloperWorker.getClient(ParticipantsApi.class)
+        participant = adminDeveloperWorker.getClient(ParticipantsApi.class)
                 .getParticipantById(user.getUserId(), false).execute().body();
         participant.setClientTimeZone("America/Los_Angeles");
         adminDeveloperWorker.getClient(ParticipantsApi.class).updateParticipant(user.getUserId(), participant)
                 .execute();
+
+        // Verify version 6. Has same results as version 5.
+        Thread.sleep(10000);
+        verifyDemographicsViewRow(ex3Config, healthCode, 6, expectedStudy1Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 6, expectedStudy1Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 6, expectedStudy2Version5);
+
         // add study demographics validation for number range and upload invalid
         // demographics (version 7)
         DemographicValuesValidationConfig numberRangeConfig = new DemographicValuesValidationConfig()
@@ -685,6 +767,21 @@ public class Exporter3Test {
                                 new Demographic().values(ImmutableList.of(2000))));
         researcher.getClient(DemographicsApi.class)
                 .saveDemographicUser(STUDY_ID, user.getUserId(), numberValidationDemographicUser).execute();
+
+        // Verify version 7.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version7 = new ArrayList<>();
+        expectedStudy1Version7.add(expectedStudy1Version5Row0);
+        expectedStudy1Version7.add(expectedStudy1Version5Row1);
+
+        Map<String, String> expectedStudy1Version7Row2 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
+                "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX);
+        expectedStudy1Version7.add(expectedStudy1Version7Row2);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 7, expectedStudy1Version7);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 7, expectedStudy1Version7);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 7, expectedStudy2Version5);
+
         // add study demographics validation for enums and upload invalid demographics
         // (version 8)
         DemographicValuesEnumValidationRules enumRules = new DemographicValuesEnumValidationRules();
@@ -700,9 +797,31 @@ public class Exporter3Test {
                                 new Demographic().values(ImmutableList.of("baz"))));
         researcher.getClient(DemographicsApi.class)
                 .saveDemographicUser(STUDY_ID, user.getUserId(), enumValidationDemographicUser).execute();
+
+        // Verify version 8.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedStudy1Version8 = new ArrayList<>();
+        expectedStudy1Version8.add(expectedStudy1Version5Row0);
+        expectedStudy1Version8.add(expectedStudy1Version5Row1);
+
+        Map<String, String> expectedStudy1Version8Row2 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
+                "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE);
+        expectedStudy1Version8.add(expectedStudy1Version8Row2);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 8, expectedStudy1Version8);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 8, expectedStudy1Version8);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 8, expectedStudy2Version5);
+
         // study delete demographic user (only app demographics should remain) (version
         // 9)
         researcher.getClient(DemographicsApi.class).deleteDemographicUser(STUDY_ID, user.getUserId()).execute();
+
+        // Verify version 9.
+        Thread.sleep(10000);
+        verifyDemographicsViewRow(ex3Config, healthCode, 9, expectedStudy2Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 9, expectedStudy2Version5);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 9, expectedStudy2Version5);
+
         // add app demographics validation for number range and upload invalid
         // demographics (version 10)
         adminDeveloperWorker.getClient(DemographicsApi.class)
@@ -710,6 +829,18 @@ public class Exporter3Test {
         adminDeveloperWorker.getClient(DemographicsApi.class)
                 .saveDemographicUserAppLevel(user.getUserId(), numberValidationDemographicUser)
                 .execute();
+
+        // Verify version 10.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedVersion10 = new ArrayList<>();
+        Map<String, String> expectedVersion10Row0 = makeExpectedDemographicsViewRowValueMap(null,
+                "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX);
+        expectedVersion10.add(expectedVersion10Row0);
+
+        verifyDemographicsViewRow(ex3Config, healthCode, 10, expectedVersion10);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 10, expectedVersion10);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 10, expectedVersion10);
+
         // add app demographics validation for enums and upload invalid demographics
         // (version 11)
         adminDeveloperWorker.getClient(DemographicsApi.class)
@@ -718,344 +849,90 @@ public class Exporter3Test {
                 .saveDemographicUserAppLevel(user.getUserId(), enumValidationDemographicUser)
                 .execute();
 
-        // wait for export
-        Thread.sleep(60000);
+        // Verify version 11.
+        Thread.sleep(10000);
+        List<Map<String, String>> expectedVersion11 = new ArrayList<>();
+        Map<String, String> expectedVersion11Row0 = makeExpectedDemographicsViewRowValueMap(null,
+                "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE);
+        expectedVersion11.add(expectedVersion11Row0);
 
-        // fetch synapse tables
-        Map<String, String> tableIdToOrderByClause = new HashMap<>();
-        // participant version tables
-        tableIdToOrderByClause.put(ex3Config.getParticipantVersionTableId(), PARTICIPANT_VERSIONS_TABLE_ORDER_BY);
-        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionTableId(),
-                PARTICIPANT_VERSIONS_TABLE_ORDER_BY);
-        tableIdToOrderByClause.put(ex3ConfigForStudy2.getParticipantVersionTableId(),
-                PARTICIPANT_VERSIONS_TABLE_ORDER_BY);
-        // demographics tables
-        tableIdToOrderByClause.put(ex3Config.getParticipantVersionDemographicsTableId(), null);
-        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionDemographicsTableId(), null);
-        tableIdToOrderByClause.put(ex3ConfigForStudy2.getParticipantVersionDemographicsTableId(), null);
-        // joined participant versions and demographics tables
-        tableIdToOrderByClause.put(ex3Config.getParticipantVersionDemographicsViewId(),
-                PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY);
-        tableIdToOrderByClause.put(ex3ConfigForStudy.getParticipantVersionDemographicsViewId(),
-                PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY);
-        tableIdToOrderByClause.put(ex3ConfigForStudy2.getParticipantVersionDemographicsViewId(),
-                PARTICIPANT_VERSIONS_DEMOGRAPHICS_VIEW_ORDER_BY);
-        Map<String, QueryResultBundle> queryResults = selectAllFromSynapseTablesWithQueryCount(tableIdToOrderByClause,
-                100L);
+        RowSet demographicsViewRowSet = verifyDemographicsViewRow(ex3Config, healthCode, 11, expectedVersion11);
+        verifyDemographicsViewRow(ex3ConfigForStudy, healthCode, 11, expectedVersion11);
+        verifyDemographicsViewRow(ex3ConfigForStudy2, healthCode, 11, expectedVersion11);
 
-        // get study participant versions
-        QueryResultBundle studyParticipantVersionTableResults = queryResults
-                .get(ex3ConfigForStudy.getParticipantVersionTableId());
-        QueryResult studyParticipantVersionTableResult = studyParticipantVersionTableResults.getQueryResult();
-        List<Row> studyParticipantVersionRows = studyParticipantVersionTableResult.getQueryResults().getRows();
-
-        // check study demographics table
-        // don't need to check the values in the table because they are included in the
-        // view
-        QueryResultBundle demographicsStudyTableResults = queryResults
-                .get(ex3ConfigForStudy.getParticipantVersionDemographicsTableId());
-        // check demographics table size
-        assertEquals(demographicsStudyTableResults.getQueryCount().longValue(), 20L);
         // check demographics table column names
-        verifySynapseTableColumns(demographicsStudyTableResults.getQueryResult(),
+        // Make a dummy query with 1 row. We only want the headers anyway.
+        String demographicsTableQuery = "SELECT * FROM " + ex3Config.getParticipantVersionDemographicsTableId() +
+                " WHERE healthCode = '" + healthCode + "' AND participantVersion=11";
+        RowSet demographicsTableRowSet = querySynapseTable(ex3Config.getParticipantVersionDemographicsTableId(),
+                demographicsTableQuery);
+        verifySynapseTableColumns(demographicsTableRowSet,
                 ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
                         "demographicValue", "demographicUnits", "demographicInvalidity"));
 
-        // check study demographics view
-        QueryResultBundle demographicsStudyViewResults = queryResults
-                .get(ex3ConfigForStudy.getParticipantVersionDemographicsViewId());
-        // check study demographics view size
-        assertEquals(demographicsStudyViewResults.getQueryCount().longValue(), 20L);
-        QueryResult demographicsStudyViewResult = demographicsStudyViewResults.getQueryResult();
         // check study demographics view column names
-        verifySynapseTableColumns(demographicsStudyViewResult,
+        verifySynapseTableColumns(demographicsViewRowSet,
                 ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
                         "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
                         "demographicCategoryName", "demographicValue", "demographicUnits", "demographicInvalidity"));
-        // check study demographics view values
-        List<Row> demographicsStudyViewResultRows = demographicsStudyViewResult.getQueryResults().getRows();
-        // version 2
-        assertEquals(demographicsStudyViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 2, STUDY_ID, "category0", "value0", null, null));
-        // version 3
-        assertEquals(demographicsStudyViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 3, STUDY_ID, "category1", null, null, null));
-        assertEquals(demographicsStudyViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 3, STUDY_ID, "category2", "value1", "units1", null));
-        // version 4
-        assertEquals(demographicsStudyViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 4, STUDY_ID, "category2", "value1", "units1", null));
-        // version 5
-        assertEquals(demographicsStudyViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, null, "category3", "value3", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(6).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 5, STUDY_ID, "category2", "value1", "units1", null));
-        // version 6
-        assertEquals(demographicsStudyViewResultRows.get(7).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(8).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, null, "category3", "value3", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(9).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 6, STUDY_ID, "category2", "value1", "units1", null));
-        // version 7
-        assertEquals(demographicsStudyViewResultRows.get(10).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 7, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 7, null, "category3", "value3", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(12).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 7, STUDY_ID, "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX));
-        // version 8
-        assertEquals(demographicsStudyViewResultRows.get(13).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 8, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(14).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 8, null, "category3", "value3", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(15).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 8, STUDY_ID, "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE));
-        // version 9
-        assertEquals(demographicsStudyViewResultRows.get(16).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 9, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudyViewResultRows.get(17).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 9, null, "category3", "value3", null, null));
-        // version 10
-        assertEquals(demographicsStudyViewResultRows.get(18).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 10, null, "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX));
-        // version 11
-        assertEquals(demographicsStudyViewResultRows.get(19).getValues(), makeExpectedDemographicsViewRow(
-                studyParticipantVersionRows, 11, null, "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE));
 
-        // get app participant versions
-        QueryResultBundle appParticipantVersionTableResults = queryResults
-                .get(ex3Config.getParticipantVersionTableId());
-        QueryResult appParticipantVersionTableResult = appParticipantVersionTableResults.getQueryResult();
-        List<Row> appParticipantVersionRows = appParticipantVersionTableResult.getQueryResults().getRows();
-
-        // check app demographics table
-        // don't need to check the values in the table because they are included in the
-        // view
-        QueryResultBundle demographicsAppTableResults = queryResults
-                .get(ex3Config.getParticipantVersionDemographicsTableId());
-        // check demographics table size
-        assertEquals(demographicsAppTableResults.getQueryCount().longValue(), 20L);
-        verifySynapseTableColumns(demographicsAppTableResults.getQueryResult(),
-                ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
-                        "demographicValue", "demographicUnits", "demographicInvalidity"));
-
-        // check app demographics view
-        QueryResultBundle demographicsAppViewResults = queryResults
-                .get(ex3Config.getParticipantVersionDemographicsViewId());
-        // check app demographics view size
-        assertEquals(demographicsAppViewResults.getQueryCount().longValue(), 20L);
-        QueryResult demographicsAppViewResult = demographicsAppViewResults.getQueryResult();
-        // check demographics view column names
-        verifySynapseTableColumns(demographicsAppViewResult,
-                ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
-                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
-                        "demographicCategoryName", "demographicValue", "demographicUnits", "demographicInvalidity"));
-        // check app demographics view values
-        List<Row> demographicsAppViewResultRows = demographicsAppViewResult.getQueryResults().getRows();
-        // version 2
-        assertEquals(demographicsAppViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 2, STUDY_ID, "category0", "value0", null, null));
-        // version 3
-        assertEquals(demographicsAppViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 3, STUDY_ID, "category1", null, null, null));
-        assertEquals(demographicsAppViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 3, STUDY_ID, "category2", "value1", "units1", null));
-        // version 4
-        assertEquals(demographicsAppViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 4, STUDY_ID, "category2", "value1", "units1", null));
-        // version 5
-        assertEquals(demographicsAppViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, null, "category3", "value2", null, null));
-        assertEquals(demographicsAppViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, null, "category3", "value3", null, null));
-        assertEquals(demographicsAppViewResultRows.get(6).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 5, STUDY_ID, "category2", "value1", "units1", null));
-        // version 6
-        assertEquals(demographicsAppViewResultRows.get(7).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, null, "category3", "value2", null, null));
-        assertEquals(demographicsAppViewResultRows.get(8).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, null, "category3", "value3", null, null));
-        assertEquals(demographicsAppViewResultRows.get(9).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 6, STUDY_ID, "category2", "value1", "units1", null));
-        // version 7
-        assertEquals(demographicsAppViewResultRows.get(10).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 7, null, "category3", "value2", null, null));
-        assertEquals(demographicsAppViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 7, null, "category3", "value3", null, null));
-        assertEquals(demographicsAppViewResultRows.get(12).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 7, STUDY_ID, "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX));
-        // version 8
-        assertEquals(demographicsAppViewResultRows.get(13).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 8, null, "category3", "value2", null, null));
-        assertEquals(demographicsAppViewResultRows.get(14).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 8, null, "category3", "value3", null, null));
-        assertEquals(demographicsAppViewResultRows.get(15).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 8, STUDY_ID, "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE));
-        // version 9
-        assertEquals(demographicsAppViewResultRows.get(16).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 9, null, "category3", "value2", null, null));
-        assertEquals(demographicsAppViewResultRows.get(17).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 9, null, "category3", "value3", null, null));
-        // version 10
-        assertEquals(demographicsAppViewResultRows.get(18).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 10, null, "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX));
-        // version 11
-        assertEquals(demographicsAppViewResultRows.get(19).getValues(), makeExpectedDemographicsViewRow(
-                appParticipantVersionRows, 11, null, "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE));
-
-        // get study2 participant versions
-        QueryResultBundle study2ParticipantVersionTableResults = queryResults
-                .get(ex3ConfigForStudy2.getParticipantVersionTableId());
-        QueryResult study2ParticipantVersionTableResult = study2ParticipantVersionTableResults.getQueryResult();
-        List<Row> study2ParticipantVersionRows = study2ParticipantVersionTableResult.getQueryResults().getRows();
-
-        // check study2 demographics table
-        // don't need to check the values in the table because they are included in the
-        // view
-        QueryResultBundle demographicsStudy2TableResults = queryResults
-                .get(ex3ConfigForStudy2.getParticipantVersionDemographicsTableId());
-        // check demographics table size
-        assertEquals(demographicsStudy2TableResults.getQueryCount().longValue(), 12L);
-        verifySynapseTableColumns(demographicsStudy2TableResults.getQueryResult(),
-                ImmutableList.of("healthCode", "participantVersion", "studyId", "demographicCategoryName",
-                        "demographicValue", "demographicUnits", "demographicInvalidity"));
-
-        // check study2 demographics view
-        QueryResultBundle demographicsStudy2ViewResults = queryResults
-                .get(ex3ConfigForStudy2.getParticipantVersionDemographicsViewId());
-        // check app demographics view size
-        assertEquals(demographicsStudy2ViewResults.getQueryCount().longValue(), 12L);
-        QueryResult demographicsStudy2ViewResult = demographicsStudy2ViewResults.getQueryResult();
-        // check demographics view column names
-        verifySynapseTableColumns(demographicsStudy2ViewResult,
-                ImmutableList.of("healthCode", "participantVersion", "createdOn", "modifiedOn", "dataGroups",
-                        "languages", "sharingScope", "studyMemberships", "clientTimeZone", "studyId",
-                        "demographicCategoryName", "demographicValue", "demographicUnits", "demographicInvalidity"));
-        // check demographics view values
-        // should only have app demographics (study demographics should not be in study2
-        // view)
-        List<Row> demographicsStudy2ViewResultRows = demographicsStudy2ViewResult.getQueryResults().getRows();
-        // version 5
-        assertEquals(demographicsStudy2ViewResultRows.get(0).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 5, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudy2ViewResultRows.get(1).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 5, null, "category3", "value3", null, null));
-        // version 6
-        assertEquals(demographicsStudy2ViewResultRows.get(2).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 6, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudy2ViewResultRows.get(3).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 6, null, "category3", "value3", null, null));
-        // version 7
-        assertEquals(demographicsStudy2ViewResultRows.get(4).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 7, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudy2ViewResultRows.get(5).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 7, null, "category3", "value3", null, null));
-        // version 8
-        assertEquals(demographicsStudy2ViewResultRows.get(6).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 8, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudy2ViewResultRows.get(7).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 8, null, "category3", "value3", null, null));
-        // version 9
-        assertEquals(demographicsStudy2ViewResultRows.get(8).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 9, null, "category3", "value2", null, null));
-        assertEquals(demographicsStudy2ViewResultRows.get(9).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 9, null, "category3", "value3", null, null));
-        // version 10
-        assertEquals(demographicsStudy2ViewResultRows.get(10).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 10, null, "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX));
-        // version 11
-        assertEquals(demographicsStudy2ViewResultRows.get(11).getValues(), makeExpectedDemographicsViewRow(
-                study2ParticipantVersionRows, 11, null, "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE));
     }
 
-    private void verifySynapseTableColumns(QueryResult queryResult, List<String> expectedColumnNames) {
-        assertEquals(queryResult.getQueryResults().getHeaders().size(), expectedColumnNames.size());
-        queryResult.getQueryResults().getHeaders().stream().map(column -> column.getName());
+    private Map<String, String> makeExpectedDemographicsViewRowValueMap(String studyId, String categoryName,
+            String value, String units, String invalidity) {
+        Map<String, String> rowValueMap = new HashMap<>();
+        rowValueMap.put("studyId", studyId);
+        rowValueMap.put("demographicCategoryName", categoryName);
+        rowValueMap.put("demographicValue", value);
+        rowValueMap.put("demographicUnits", units);
+        rowValueMap.put("demographicInvalidity", invalidity);
+        return rowValueMap;
+    }
+
+    private Map<String, String> convertRowToMap(List<String> headerNameList, Row row) {
+        List<String> valueList = row.getValues();
+        assertEquals(headerNameList.size(), valueList.size());
+        Map<String, String> map = new HashMap<>();
+        for (int i = 0; i < headerNameList.size(); i++) {
+            map.put(headerNameList.get(i), valueList.get(i));
+        }
+        return map;
+    }
+
+    // Actual rows and expected rows should be in the same order. Query is ordered by studyId,
+    // then demographicCategoryName, then demographicValue.
+    private RowSet verifyDemographicsViewRow(Exporter3Configuration ex3Config, String healthCode, int versionNum,
+            List<Map<String, String>> expectedRows) throws InterruptedException, SynapseException {
+        // Query Synapse.
+        String query = "SELECT * FROM " + ex3Config.getParticipantVersionDemographicsViewId() + " WHERE healthCode='" +
+                healthCode + "' AND participantVersion=" + versionNum +
+                " order by studyId, demographicCategoryName, demographicValue";
+        RowSet rowSet = querySynapseTable(ex3Config.getParticipantVersionDemographicsViewId(), query);
+        List<Row> rowList = rowSet.getRows();
+        assertEquals(rowList.size(), expectedRows.size());
+        if (!expectedRows.isEmpty()) {
+            // Get headers are strings.
+            List<String> headerNameList = rowSet.getHeaders().stream().map(SelectColumn::getName)
+                    .collect(Collectors.toList());
+
+            // Verify each row.
+            for (int i = 0; i < rowList.size(); i++) {
+                Map<String, String> rowValueMap = convertRowToMap(headerNameList, rowList.get(i));
+                for (Map.Entry<String, String> expectedValuePair : expectedRows.get(i).entrySet()) {
+                    assertTrue(rowValueMap.containsKey(expectedValuePair.getKey()));
+                    assertEquals(rowValueMap.get(expectedValuePair.getKey()), expectedValuePair.getValue());
+                }
+            }
+        }
+
+        return rowSet;
+    }
+
+    private void verifySynapseTableColumns(RowSet rowSet, List<String> expectedColumnNames) {
+        assertEquals(rowSet.getHeaders().size(), expectedColumnNames.size());
         for (int i = 0; i < expectedColumnNames.size(); i++) {
-            assertEquals(queryResult.getQueryResults().getHeaders().get(i).getName(), expectedColumnNames.get(i));
+            assertEquals(rowSet.getHeaders().get(i).getName(), expectedColumnNames.get(i));
         }
-    }
-
-    private List<String> makeExpectedDemographicsViewRow(List<Row> participantVersionRows, int versionNum,
-            String studyId, String categoryName, String value, String units, String invalidity) {
-        Row participantVersionRow = null;
-        for (Row row : participantVersionRows) {
-            // version num is at column index 1 in participant versions table
-            if (row.getValues().get(1).equals(String.valueOf(versionNum))) {
-                participantVersionRow = row;
-            }
-        }
-        if (participantVersionRow == null) {
-            throw new IllegalArgumentException(
-                    "the specified version " + versionNum + " does not exist in the participant versions table");
-        }
-        // the first part of each row is the same as in the participant versions table
-        List<String> expectedRow = new ArrayList<>(participantVersionRow.getValues());
-        expectedRow.add(studyId);
-        expectedRow.add(categoryName);
-        expectedRow.add(value);
-        expectedRow.add(units);
-        expectedRow.add(invalidity);
-        return expectedRow;
-    }
-
-    /**
-     * Requests multiple tables from Synapse simultaneously with async queries.
-     * 
-     * @param tableIdToOrderByClause A map of table ids that should be fetched to an
-     *                               order by clause for ordering the query results.
-     *                               The order by clause can be null. The order by
-     *                               clause should be a string containing column
-     *                               names separated by a comma and a space.
-     * @param limit                  The limit for number of rows.
-     * @return A map of table ids to the results for that table. The results contain
-     *         the count of the query result and the query results themselves.
-     * @throws SynapseException
-     * @throws InterruptedException
-     * @throws TimeoutException
-     */
-    private Map<String, QueryResultBundle> selectAllFromSynapseTablesWithQueryCount(
-            Map<String, String> tableIdToOrderByClause, long limit)
-            throws SynapseException, InterruptedException, TimeoutException {
-        Map<String, String> tableIdToJobId = new HashMap<>(tableIdToOrderByClause.size());
-        for (Map.Entry<String, String> entry : tableIdToOrderByClause.entrySet()) {
-            String tableId = entry.getKey();
-            String orderByClause = entry.getValue();
-            String query = "select * from " + tableId;
-            if (orderByClause != null) {
-                query += " order by " + orderByClause;
-            }
-            String jobId = synapseClient.queryTableEntityBundleAsyncStart(query, 0L, limit,
-                    SynapseClient.QUERY_PARTMASK | SynapseClient.COUNT_PARTMASK, tableId);
-            tableIdToJobId.put(tableId, jobId);
-        }
-        Map<String, QueryResultBundle> queryResults = new HashMap<>(tableIdToOrderByClause.size());
-        for (int retries = 0; retries < 20; retries++) {
-            for (Iterator<Map.Entry<String, String>> iter = tableIdToJobId.entrySet().iterator(); iter.hasNext();) {
-                Map.Entry<String, String> entry = iter.next();
-                String tableId = entry.getKey();
-                String jobId = entry.getValue();
-                try {
-                    QueryResultBundle queryResult = synapseClient.queryTableEntityBundleAsyncGet(jobId, tableId);
-                    // if we get here the query is complete
-                    queryResults.put(tableId, queryResult);
-                    // remove it so we don't try to poll it again
-                    iter.remove();
-                } catch (SynapseResultNotReadyException e) {
-
-                }
-
-                if (tableIdToJobId.isEmpty()) {
-                    // no more jobs left to wait on
-                    return queryResults;
-                }
-                Thread.sleep(500);
-            }
-        }
-        throw new TimeoutException("timed out waiting for Synapse query results");
     }
 
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
@@ -1279,29 +1156,30 @@ public class Exporter3Test {
     }
 
     private RowSet queryParticipantVersion(Exporter3Configuration ex3Config, String healthCode,
-            String participantVersionStr) throws Exception {
+            String participantVersionStr) throws InterruptedException, SynapseException {
         // Query participant version table.
         String participantVersionTableId = ex3Config.getParticipantVersionTableId();
         String query = "SELECT * FROM " + participantVersionTableId + " WHERE healthCode='" + healthCode + "'";
         if (participantVersionStr != null) {
             query += " and participantVersion=" + participantVersionStr;
         }
-        String queryJobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
-                SynapseClient.QUERY_PARTMASK, participantVersionTableId);
+        return querySynapseTable(participantVersionTableId, query);
+    }
 
+    private RowSet querySynapseTable(String tableId, String query) throws InterruptedException, SynapseException {
+        String jobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
+                SynapseClient.QUERY_PARTMASK | SynapseClient.COUNT_PARTMASK, tableId);
         QueryResultBundle queryResultBundle = null;
-        for (int loops = 0; loops < 5; loops++) {
+        for (int loops = 0; loops < 10; loops++) {
             // Poll until result is ready.
             Thread.sleep(1000);
             try {
-                queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(queryJobId,
-                        participantVersionTableId);
+                queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(jobId, tableId);
             } catch (SynapseResultNotReadyException ex) {
                 // Wait and try again.
             }
         }
         assertNotNull(queryResultBundle, "Timed out querying for participant version");
-
         return queryResultBundle.getQueryResult().getQueryResults();
     }
 
