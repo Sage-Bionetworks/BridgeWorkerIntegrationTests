@@ -667,7 +667,7 @@ public class Exporter3Test {
 
         // Verify version 2.
         // Subsequent versions only take about 10 seconds in the Participant Version Worker, for whatever reason.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version2 = new ArrayList<>();
         Map<String, String> expectedStudy1Version2Row0 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
                 "category0", "value0", null, null);
@@ -688,7 +688,7 @@ public class Exporter3Test {
                 .execute().body();
 
         // Verify version 3.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version3 = new ArrayList<>();
         Map<String, String> expectedStudy1Version3Row0 = makeExpectedDemographicsViewRowValueMap(STUDY_ID,
                 "category1", null, null, null);
@@ -705,7 +705,7 @@ public class Exporter3Test {
                 overwritingDemographicUser.getDemographics().get("category1").getId()).execute();
 
         // Verify version 4.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version4 = new ArrayList<>();
         expectedStudy1Version4.add(expectedStudy1Version3Row1);
 
@@ -722,7 +722,7 @@ public class Exporter3Test {
                 .execute().body();
 
         // Verify version 5.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version5 = new ArrayList<>();
         Map<String, String> expectedStudy1Version5Row0 = makeExpectedDemographicsViewRowValueMap(null,
                 "category3", "value2", null, null);
@@ -748,7 +748,7 @@ public class Exporter3Test {
                 .execute();
 
         // Verify version 6. Has same results as version 5.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         verifyDemographicsViewRowsForVersion(healthCode, 6, expectedStudy1Version5, expectedStudy2Version5);
 
         // add study demographics validation for number range and upload invalid
@@ -767,7 +767,7 @@ public class Exporter3Test {
                 .saveDemographicUser(STUDY_ID, user.getUserId(), numberValidationDemographicUser).execute();
 
         // Verify version 7.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version7 = new ArrayList<>();
         expectedStudy1Version7.add(expectedStudy1Version5Row0);
         expectedStudy1Version7.add(expectedStudy1Version5Row1);
@@ -795,7 +795,7 @@ public class Exporter3Test {
                 .saveDemographicUser(STUDY_ID, user.getUserId(), enumValidationDemographicUser).execute();
 
         // Verify version 8.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedStudy1Version8 = new ArrayList<>();
         expectedStudy1Version8.add(expectedStudy1Version5Row0);
         expectedStudy1Version8.add(expectedStudy1Version5Row1);
@@ -811,7 +811,7 @@ public class Exporter3Test {
         researcher.getClient(DemographicsApi.class).deleteDemographicUser(STUDY_ID, user.getUserId()).execute();
 
         // Verify version 9.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         verifyDemographicsViewRowsForVersion(healthCode, 9, expectedStudy2Version5, expectedStudy2Version5);
 
         // add app demographics validation for number range and upload invalid
@@ -823,7 +823,7 @@ public class Exporter3Test {
                 .execute();
 
         // Verify version 10.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedVersion10 = new ArrayList<>();
         Map<String, String> expectedVersion10Row0 = makeExpectedDemographicsViewRowValueMap(null,
                 "numberValidationCategory", "2000", null, INVALID_NUMBER_VALUE_GREATER_THAN_MAX);
@@ -840,7 +840,7 @@ public class Exporter3Test {
                 .execute();
 
         // Verify version 11.
-        Thread.sleep(10000);
+        Thread.sleep(15000);
         List<Map<String, String>> expectedVersion11 = new ArrayList<>();
         Map<String, String> expectedVersion11Row0 = makeExpectedDemographicsViewRowValueMap(null,
                 "enumValidationCategory", "baz", null, INVALID_ENUM_VALUE);
