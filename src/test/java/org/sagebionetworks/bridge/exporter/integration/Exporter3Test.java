@@ -97,7 +97,7 @@ import org.sagebionetworks.bridge.rest.model.DemographicValuesNumberRangeValidat
 import org.sagebionetworks.bridge.rest.model.DemographicValuesValidationConfig;
 import org.sagebionetworks.bridge.rest.model.DemographicValuesValidationConfig.ValidationTypeEnum;
 import org.sagebionetworks.bridge.rest.model.Enrollment;
-import org.sagebionetworks.bridge.rest.model.ExportNotificationRecordInfo;
+import org.sagebionetworks.bridge.rest.model.ExportedRecordInfo;
 import org.sagebionetworks.bridge.rest.model.Exporter3Configuration;
 import org.sagebionetworks.bridge.rest.model.ExporterSubscriptionRequest;
 import org.sagebionetworks.bridge.rest.model.ExporterSubscriptionResult;
@@ -992,9 +992,9 @@ public class Exporter3Test {
         String uploadId = uploadInfo.uploadId;
 
         // Verify Synapse and S3.
-        ExportNotificationRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
+        ExportedRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
                 false, expectedMetadata);
-        ExportNotificationRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
+        ExportedRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
                 true, expectedMetadata);
 
         // Verify the record in Bridge.
@@ -1003,6 +1003,8 @@ public class Exporter3Test {
         assertTrue(record.isExported());
         DateTime oneHourAgo = DateTime.now().minusHours(1);
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
+        assertRecordInfoEquals(appRecordInfo, record.getExportedRecord());
+        assertRecordInfoEquals(studyRecordInfo, record.getExportedStudyRecords().get(STUDY_ID));
 
         // Verify the presigned download url for a health record is generated and contains the data expected.
         String url = record.getDownloadUrl();
@@ -1089,7 +1091,16 @@ public class Exporter3Test {
         assertTrue(foundStudyNotification, "Found study notification");
     }
 
-    private ExportNotificationRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
+    // This exists because type is not settable, so we can't just call .equals().
+    private void assertRecordInfoEquals(ExportedRecordInfo record1, ExportedRecordInfo record2) {
+        assertEquals(record1.getFileEntityId(), record2.getFileEntityId());
+        assertEquals(record1.getParentProjectId(), record2.getParentProjectId());
+        assertEquals(record1.getRawFolderId(), record2.getRawFolderId());
+        assertEquals(record1.getS3Bucket(), record2.getS3Bucket());
+        assertEquals(record1.getS3Key(), record2.getS3Key());
+    }
+
+    private ExportedRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
             Map<String,String> expectedMetadata) throws Exception {
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
@@ -1169,7 +1180,7 @@ public class Exporter3Test {
         assertTrue(participantModifiedOn > oneHourAgo.getMillis());
 
         // Return the record info, so that we can verify notifications later on in our test.
-        ExportNotificationRecordInfo recordInfo = new ExportNotificationRecordInfo();
+        ExportedRecordInfo recordInfo = new ExportedRecordInfo();
         recordInfo.setParentProjectId(ex3Config.getProjectId());
         recordInfo.setRawFolderId(todayFolderId);
         recordInfo.setFileEntityId(exportedFileId);
