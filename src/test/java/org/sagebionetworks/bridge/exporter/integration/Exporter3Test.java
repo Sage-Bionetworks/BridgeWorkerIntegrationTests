@@ -1272,7 +1272,7 @@ public class Exporter3Test {
 
     private static void verifyMetadata(Map<String, String> metadataMap, String expectedRecordId, Map<String,String> expectedValues)
     throws Exception {
-        assertEquals(metadataMap.size(), 7 + expectedValues.size());
+        assertEquals(metadataMap.size(), 8 + expectedValues.size());
         assertTrue(metadataMap.containsKey("healthCode"));
         assertTrue(metadataMap.containsKey("contentType"));
         assertEquals(metadataMap.get("contentType"), CONTENT_TYPE_TEXT_PLAIN);
@@ -1287,6 +1287,10 @@ public class Exporter3Test {
         JsonNode jsonNode = DefaultObjectMapper.INSTANCE.readTree(clientInfoJsonText);
         assertTrue(jsonNode.isObject());
         assertEquals(jsonNode.get("appName").textValue(), APP_NAME_FOR_USER);
+
+        // User-Agent exists. Because the client can add additional default fields, just check that it starts with
+        // APP_NAME_FOR_USER.
+        assertTrue(metadataMap.get("userAgent").startsWith(APP_NAME_FOR_USER));
 
         // Timestamps are relatively recent. Because of clock skew on Jenkins, give a very generous time window of,
         // let's say, 1 hour.
