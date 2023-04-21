@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,12 +51,10 @@ import org.sagebionetworks.client.SynapseClient;
 import org.sagebionetworks.client.SynapseStsCredentialsProvider;
 import org.sagebionetworks.client.exceptions.SynapseException;
 import org.sagebionetworks.client.exceptions.SynapseNotFoundException;
-import org.sagebionetworks.client.exceptions.SynapseResultNotReadyException;
 import org.sagebionetworks.repo.model.annotation.v2.Annotations;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValue;
 import org.sagebionetworks.repo.model.annotation.v2.AnnotationsValueType;
 import org.sagebionetworks.repo.model.sts.StsPermission;
-import org.sagebionetworks.repo.model.table.QueryResultBundle;
 import org.sagebionetworks.repo.model.table.Row;
 import org.sagebionetworks.repo.model.table.RowSet;
 import org.sagebionetworks.repo.model.table.SelectColumn;
@@ -116,6 +115,7 @@ import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
+import org.sagebionetworks.bridge.synapse.SynapseHelper;
 import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
@@ -163,6 +163,7 @@ public class Exporter3Test {
     private static AmazonSQS sqsClient;
     private static SqsHelper sqsHelper;
     private static SynapseClient synapseClient;
+    private static SynapseHelper synapseHelper;
     private static String testQueueArn;
     private static String testQueueUrl;
     private static String workerSqsUrl;
@@ -199,6 +200,15 @@ public class Exporter3Test {
 
         // Set up SynapseClient.
         synapseClient = TestUtils.getSynapseClient(config);
+
+        // Set up SynapseHelper so that the Synapse calls in our integ tests have retries. Instead of 5 minute
+        // exponential backoff, use 15 tries with a 1 second delay each (which is how the previous version of the test
+        // worked).
+        int[] backoffPlan = new int[15];
+        Arrays.fill(backoffPlan, 1);
+        synapseHelper = new SynapseHelper();
+        synapseHelper.setSynapseClient(synapseClient);
+        synapseHelper.setAsyncGetBackoffPlan(backoffPlan);
 
         // Create admin account.
         adminDeveloperWorker = TestUserHelper.createAndSignInUser(Exporter3Test.class, false, Role.ADMIN,
@@ -1112,7 +1122,7 @@ public class Exporter3Test {
         String exportedFileId = getSynapseChildByName(todayFolderId, exportedFilename);
 
         // Now verify the annotations.
-        Annotations annotations = synapseClient.getAnnotationsV2(exportedFileId);
+        Annotations annotations = synapseHelper.getAnnotationsWithRetry(exportedFileId);
         Map<String, AnnotationsValue> annotationMap = annotations.getAnnotations();
         Map<String, String> flattenedAnnotationMap = new HashMap<>();
         for (Map.Entry<String, AnnotationsValue> annotationEntry : annotationMap.entrySet()) {
@@ -1201,22 +1211,8 @@ public class Exporter3Test {
     }
 
     private Future<RowSet> querySynapseTable(String tableId, String query) {
-        return EXECUTOR_SERVICE.submit(() -> {
-            String jobId = synapseClient.queryTableEntityBundleAsyncStart(query, null, null,
-                    SynapseClient.QUERY_PARTMASK | SynapseClient.COUNT_PARTMASK, tableId);
-            QueryResultBundle queryResultBundle = null;
-            for (int loops = 0; loops < 15; loops++) {
-                // Poll until result is ready.
-                Thread.sleep(1000);
-                try {
-                    queryResultBundle = synapseClient.queryTableEntityBundleAsyncGet(jobId, tableId);
-                } catch (SynapseResultNotReadyException ex) {
-                    // Wait and try again.
-                }
-            }
-            assertNotNull(queryResultBundle, "Timed out querying for participant version");
-            return queryResultBundle.getQueryResult().getQueryResults();
-        });
+        return EXECUTOR_SERVICE.submit(() -> synapseHelper.queryTableEntityBundle(query, tableId).getQueryResult()
+                .getQueryResults());
     }
 
     private static class UploadInfo {
@@ -1264,7 +1260,7 @@ public class Exporter3Test {
 
     private String getSynapseChildByName(String parentId, String childName) throws SynapseException {
         try {
-            return synapseClient.lookupChild(parentId, childName);
+            return synapseHelper.lookupChildWithRetry(parentId, childName);
         } catch (SynapseNotFoundException ex) {
             return null;
         }
