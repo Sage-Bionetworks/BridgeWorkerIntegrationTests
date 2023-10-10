@@ -85,7 +85,8 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
                     .title(getClass().getSimpleName() + " " + assessmentId)
                     .osName("Universal")
                     .ownerId(SAGE_ID)
-                    .identifier(assessmentId);
+                    .identifier(assessmentId)
+                    .phase(Assessment.PhaseEnum.DRAFT);
             assessment = assessmentApi.createAssessment(assessment).execute().body();
             
             AssessmentReference2 ref = new AssessmentReference2()

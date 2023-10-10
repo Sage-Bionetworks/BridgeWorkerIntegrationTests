@@ -588,7 +588,7 @@ public class Exporter3Test {
         String assessmentId = getClass().getSimpleName() + "-" + RandomStringUtils.randomAlphabetic(10);
         
         assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
-                .identifier(assessmentId);
+                .identifier(assessmentId).phase(Assessment.PhaseEnum.DRAFT);
         assessment = assessmentsApi.createAssessment(assessment).execute().body();
 
         schedule = new Schedule2();
