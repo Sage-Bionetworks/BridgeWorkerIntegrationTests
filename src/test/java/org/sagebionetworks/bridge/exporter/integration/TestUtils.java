@@ -20,6 +20,7 @@ import com.amazonaws.services.dynamodbv2.document.Item;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
 import com.amazonaws.services.sqs.AmazonSQSClient;
+import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTimeZone;
 import org.sagebionetworks.client.SynapseClient;
 import org.sagebionetworks.client.SynapseClientImpl;
@@ -95,6 +96,10 @@ public class TestUtils {
     public static Table getDdbTable(Config bridgeConfig, DynamoDB ddbClient, String shortName) {
         return ddbClient.getTable(bridgeConfig.getEnvironment().name().toLowerCase() + '-' +
                 bridgeConfig.getUser() + '-' + shortName);
+    }
+
+    public static String randomIdentifier(Class<?> cls) {
+        return ("sdk-" + cls.getSimpleName().toLowerCase() + "-" + RandomStringUtils.randomAlphabetic(5)).toLowerCase();
     }
 
     public static void ensureSchemas(TestUser developer) throws IOException {
