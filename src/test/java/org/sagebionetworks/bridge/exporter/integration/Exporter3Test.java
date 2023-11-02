@@ -81,6 +81,7 @@ import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
+import org.sagebionetworks.bridge.rest.api.UploadsApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
@@ -113,6 +114,7 @@ import org.sagebionetworks.bridge.rest.model.TimeWindow;
 import org.sagebionetworks.bridge.rest.model.Timeline;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
+import org.sagebionetworks.bridge.rest.model.UploadTableRow;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
 import org.sagebionetworks.bridge.synapse.SynapseHelper;
@@ -584,6 +586,7 @@ public class Exporter3Test {
         TestUser admin = TestUserHelper.getSignedInAdmin();
         AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
         SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+        UploadsApi uploadsApi = admin.getClient(UploadsApi.class);
         
         String assessmentId = getClass().getSimpleName() + "-" + RandomStringUtils.randomAlphabetic(10);
         
@@ -627,14 +630,29 @@ public class Exporter3Test {
         expectedMetadata.put("assessmentInstanceGuid", 
                 timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid());
         expectedMetadata.put("sessionInstanceGuid", timeline.getSchedule().get(0).getInstanceGuid());
+        String sessionRefId = timeline.getSchedule().get(0).getRefGuid();
+        String sessionName = timeline.getSessions().stream().filter(s -> s.getGuid().equals(sessionRefId)).findFirst().get().getLabel();
         expectedMetadata.put("sessionGuid", timeline.getSchedule().get(0).getRefGuid());
+        expectedMetadata.put("sessionName", sessionName);
         expectedMetadata.put("sessionInstanceStartDay", timeline.getSchedule().get(0).getStartDay().toString());
         expectedMetadata.put("sessionInstanceEndDay", timeline.getSchedule().get(0).getEndDay().toString());
         expectedMetadata.put("sessionStartEventId", "enrollment");
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+        String recordID = testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+
+        // Check that UploadTableRow got created
+        UploadTableRow tableRow = uploadsApi.getUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID, recordID).execute().body();
+        assertNotNull(tableRow);
+        assertEquals(tableRow.getStudyId(), STUDY_ID);
+        assertEquals(tableRow.getAssessmentGuid(), assessment.getGuid());
+        assertEquals(tableRow.getRecordId(), recordID);
+        assertEquals(tableRow.getMetadata().get("sessionGuid"), expectedMetadata.get("sessionGuid"));
+        assertEquals(tableRow.getMetadata().get("sessionStartEventId"), expectedMetadata.get("sessionStartEventId"));
+        assertEquals(tableRow.getMetadata().get("sessionName"), expectedMetadata.get("sessionName"));
+        assertNotNull(tableRow.getMetadata().get("clientInfo"));
+
     }
 
     @Test
@@ -974,7 +992,7 @@ public class Exporter3Test {
                 ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
     }
     
-    private void testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
+    private String testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
         // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
         // so that the test can succeed.
         ParticipantsApi participantsApi = user.getClient(ParticipantsApi.class);
@@ -1099,6 +1117,7 @@ public class Exporter3Test {
 
         assertTrue(foundAppNotification, "Found app notification");
         assertTrue(foundStudyNotification, "Found study notification");
+        return record.getId();
     }
 
     // This exists because type is not settable, so we can't just call .equals().
