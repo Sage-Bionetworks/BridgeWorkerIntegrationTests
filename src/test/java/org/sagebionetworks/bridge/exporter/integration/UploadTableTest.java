@@ -24,7 +24,6 @@ import com.amazonaws.services.dynamodbv2.document.DynamoDB;
 import com.amazonaws.services.dynamodbv2.document.Table;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteStreams;
 import org.joda.time.DateTime;
@@ -40,18 +39,14 @@ import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
 import org.sagebionetworks.bridge.rest.api.AppsApi;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
-import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForSuperadminsApi;
 import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
-import org.sagebionetworks.bridge.rest.api.InternalApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
+import org.sagebionetworks.bridge.rest.api.SharedAssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.Enrollment;
-import org.sagebionetworks.bridge.rest.model.ParticipantVersion;
-import org.sagebionetworks.bridge.rest.model.SharingScope;
-import org.sagebionetworks.bridge.rest.model.SharingScopeForm;
 import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.StudyParticipant;
 import org.sagebionetworks.bridge.rest.model.UploadTableRow;
@@ -73,12 +68,6 @@ public class UploadTableTest {
     private static final DateTime CREATED_ON_1B = DateTime.parse("2017-05-11T10:36:36.638Z");
     private static final DateTime CREATED_ON_2A = DateTime.parse("2017-05-12T16:40:05.089Z");
     private static final DateTime CREATED_ON_2B = DateTime.parse("2017-05-13T18:06:36.803Z");
-    private static final String DATA_GROUP_1 = "group1";
-    private static final String DATA_GROUP_SDK_INT_1 = "sdk-int-1";
-    private static final String DATA_GROUP_SDK_INT_2 = "sdk-int-2";
-    private static final String DATA_GROUP_TEST_USER = "test_user";
-    private static final String EXTERNAL_ID_1 = "external-id-1";
-    private static final String EXTERNAL_ID_2 = "external-id-2";
     private static final String RECORD_ID_1A = "record-id-1a";
     private static final String RECORD_ID_1B = "record-id-1b";
     private static final String RECORD_ID_2A = "record-id-2a";
@@ -99,8 +88,6 @@ public class UploadTableTest {
             "isTestData",
             "healthCode",
             "participantVersion",
-            "externalId",
-            "dataGroups",
     };
 
     private static TestUser admin;
@@ -113,6 +100,7 @@ public class UploadTableTest {
     private static StudyParticipant participant2;
     private static String rawDataBucket;
     private static S3Helper s3Helper;
+    private static String sharedAssessmentGuid;
     private static SqsHelper sqsHelper;
     private static String studyId;
     private static TestUser user1;
@@ -167,53 +155,26 @@ public class UploadTableTest {
         assessmentB = assessmentsApi.createAssessment(assessmentB).execute().body();
         assessmentGuidB = assessmentB.getGuid();
 
-        // Create 2 participants.
+        // Publish one of these assessments into a shared assessment.
+        assessmentsApi.publishAssessment(assessmentGuidA, assessmentIdA).execute();
+        Assessment sharedAssessment = admin.getClient(SharedAssessmentsApi.class).getLatestSharedAssessmentRevision(
+                assessmentIdA).execute().body();
+        sharedAssessmentGuid = sharedAssessment.getGuid();
+
+        // Create participants.
         user1 = TestUserHelper.createAndSignInUser(UploadTableTest.class, true);
         user2 = TestUserHelper.createAndSignInUser(UploadTableTest.class, true);
 
-        // Enroll the participants so they have an external ID.
-        // External IDs are suffixed with the study ID, so that we can test that as well.
-        Enrollment enrollment1 = new Enrollment().userId(user1.getUserId()).externalId(EXTERNAL_ID_1 + ":" + studyId);
+        // Enroll the participants in the study. (External ID is optional.)
+        Enrollment enrollment1 = new Enrollment().userId(user1.getUserId());
         studiesApi.enrollParticipant(studyId, enrollment1).execute();
 
-        Enrollment enrollment2 = new Enrollment().userId(user2.getUserId()).externalId(EXTERNAL_ID_2 + ":" + studyId);
+        Enrollment enrollment2 = new Enrollment().userId(user2.getUserId());
         studiesApi.enrollParticipant(studyId, enrollment2).execute();
 
-        // Give participants some data groups.
         ParticipantsApi participantsApi = admin.getClient(ParticipantsApi.class);
         participant1 = participantsApi.getParticipantById(user1.getUserId(), false).execute().body();
-        participant1.dataGroups(ImmutableList.of(DATA_GROUP_1, DATA_GROUP_SDK_INT_1));
-        participantsApi.updateParticipant(user1.getUserId(), participant1).execute();
-
         participant2 = participantsApi.getParticipantById(user2.getUserId(), false).execute().body();
-        participant2.dataGroups(ImmutableList.of(DATA_GROUP_1, DATA_GROUP_SDK_INT_1));
-        participantsApi.updateParticipant(user2.getUserId(), participant2).execute();
-
-        // Participants are set to no_sharing, so set them to all_qualified_researchers to create participant
-        // version 1.
-        user1.getClient(ForConsentedUsersApi.class).changeSharingScope(new SharingScopeForm()
-                .scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
-        user2.getClient(ForConsentedUsersApi.class).changeSharingScope(new SharingScopeForm()
-                .scope(SharingScope.ALL_QUALIFIED_RESEARCHERS)).execute();
-
-        // Update the data groups. This will create participant version 2.
-        participant1 = participantsApi.getParticipantById(user1.getUserId(), false).execute().body();
-        participant1.dataGroups(ImmutableList.of(DATA_GROUP_1, DATA_GROUP_SDK_INT_2));
-        participantsApi.updateParticipant(user1.getUserId(), participant1).execute();
-
-        participant2 = participantsApi.getParticipantById(user2.getUserId(), false).execute().body();
-        participant2.dataGroups(ImmutableList.of(DATA_GROUP_1, DATA_GROUP_SDK_INT_2));
-        participantsApi.updateParticipant(user2.getUserId(), participant2).execute();
-
-        // As a sanity check, verify that we have 2 participant versions for each participant.
-        ForWorkersApi workersApi = admin.getClient(ForWorkersApi.class);
-        ParticipantVersion participantVersion1 = workersApi.getLatestParticipantVersion(TEST_APP_ID, user1.getUserId())
-                .execute().body();
-        assertEquals(participantVersion1.getParticipantVersion().intValue(), 2);
-
-        ParticipantVersion participantVersion2 = workersApi.getLatestParticipantVersion(TEST_APP_ID, user2.getUserId())
-                .execute().body();
-        assertEquals(participantVersion2.getParticipantVersion().intValue(), 2);
     }
 
     @BeforeMethod
@@ -233,6 +194,7 @@ public class UploadTableTest {
 
     @AfterClass
     public static void afterClass() throws IOException {
+        // Delete test users and participant versions.
         if (user1 != null) {
             user1.signOutAndDeleteUser();
         }
@@ -240,8 +202,20 @@ public class UploadTableTest {
             user2.signOutAndDeleteUser();
         }
 
+        // Delete assessments.
+        if (assessmentGuidA != null) {
+            admin.getClient(AssessmentsApi.class).deleteAssessment(assessmentGuidA, true).execute();
+        }
+        if (assessmentGuidB != null) {
+            admin.getClient(AssessmentsApi.class).deleteAssessment(assessmentGuidB, true).execute();
+        }
+        if (sharedAssessmentGuid != null) {
+            admin.getClient(SharedAssessmentsApi.class).deleteSharedAssessment(sharedAssessmentGuid, true)
+                    .execute();
+        }
+
+        // Delete the test study. This automatically deletes all table rows in that study.
         if (studyId != null) {
-            // Delete the test study. This automatically deletes all assessments and table rows in that study.
             StudiesApi studiesApi = admin.getClient(StudiesApi.class);
             studiesApi.deleteStudy(studyId, true).execute();
         }
@@ -278,8 +252,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(null, true,
-                zipFileSuffix);
+        Map<String, File> filesByName = runWorkerAndDownloadFiles(null, zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 2);
@@ -296,24 +269,20 @@ public class UploadTableTest {
         Map<String, String[]> expectedRowsByRecordIdA = new HashMap<>();
         expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, assessmentGuidA,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_1A.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "metadata1a", "data1a" });
+                "1", "metadata1a", "data1a" });
         expectedRowsByRecordIdA.put(RECORD_ID_2A, new String[] { RECORD_ID_2A, studyId, STUDY_NAME, assessmentGuidA,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_2A.toString(), "true", participant2.getHealthCode(),
-                "1", EXTERNAL_ID_2, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "metadata2a", "data2a" });
+                "1", "metadata2a", "data2a" });
         assertCsvFile(fileA, additionalHeaders, expectedRowsByRecordIdA);
 
         File fileB = filesByName.get(expectedFilenameB);
         Map<String, String[]> expectedRowsByRecordIdB = new HashMap<>();
         expectedRowsByRecordIdB.put(RECORD_ID_1B, new String[] { RECORD_ID_1B, studyId, STUDY_NAME, assessmentGuidB,
                 assessmentIdB, "1", ASSESSMENT_B_TITLE, CREATED_ON_1B.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "metadata1b", "data1b" });
+                "1", "metadata1b", "data1b" });
         expectedRowsByRecordIdB.put(RECORD_ID_2B, new String[] { RECORD_ID_2B, studyId, STUDY_NAME, assessmentGuidB,
                 assessmentIdB, "1", ASSESSMENT_B_TITLE, CREATED_ON_2B.toString(), "true", participant2.getHealthCode(),
-                "1", EXTERNAL_ID_2, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "metadata2b", "data2b" });
+                "1", "metadata2b", "data2b" });
         assertCsvFile(fileB, additionalHeaders, expectedRowsByRecordIdB);
     }
 
@@ -332,8 +301,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA),
-                true, zipFileSuffix);
+        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 1);
@@ -347,8 +315,7 @@ public class UploadTableTest {
         Map<String, String[]> expectedRowsByRecordIdA = new HashMap<>();
         expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, assessmentGuidA,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_1A.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "metadata1a", "data1a" });
+                "1", "metadata1a", "data1a" });
         assertCsvFile(fileA, additionalHeaders, expectedRowsByRecordIdA);
     }
 
@@ -369,8 +336,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA),
-                true, zipFileSuffix);
+        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 1);
@@ -384,79 +350,38 @@ public class UploadTableTest {
         Map<String, String[]> expectedRowsByRecordIdA = new HashMap<>();
         expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, assessmentGuidA,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_1A.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "A-1a", "B-1a", "", "X-1a", "Y-1a", "" });
+                "1", "A-1a", "B-1a", "", "X-1a", "Y-1a", "" });
         expectedRowsByRecordIdA.put(RECORD_ID_2A, new String[] { RECORD_ID_2A, studyId, STUDY_NAME, assessmentGuidA,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_2A.toString(), "true", participant2.getHealthCode(),
-                "1", EXTERNAL_ID_2, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER,
-                "A-2a", "", "C-2a", "X-2a", "", "Z-2a" });
+                "1", "A-2a", "", "C-2a", "X-2a", "", "Z-2a" });
         assertCsvFile(fileA, additionalHeaders, expectedRowsByRecordIdA);
     }
 
     @Test
-    public void getNotHistorical() throws Exception {
-        // Upload table row specifies participant version 1, but we use historical=false, so the CSV is generated with
-        // participant version 2.
-        UploadTableRow row1a = new UploadTableRow().recordId(RECORD_ID_1A).assessmentGuid(assessmentGuidA)
+    public void sharedAssessment() throws Exception {
+        UploadTableRow row1a = new UploadTableRow().recordId(RECORD_ID_1A).assessmentGuid(sharedAssessmentGuid)
                 .createdOn(CREATED_ON_1A).testData(true).healthCode(participant1.getHealthCode()).participantVersion(1)
                 .putMetadataItem("foo", "metadata1a").putDataItem("bar", "data1a");
         createUploadTableRow(row1a);
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA),
-                false, zipFileSuffix);
+        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(sharedAssessmentGuid),
+                zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 1);
-        String expectedFilenameA = studyId + "-" + STUDY_NAME_TRIMMED + "-" + assessmentGuidA + "-" +
+        String expectedFilenameA = studyId + "-" + STUDY_NAME_TRIMMED + "-" + sharedAssessmentGuid + "-" +
                 ASSESSMENT_A_TITLE_TRIMMED + ".csv";
         assertTrue(filesByName.containsKey(expectedFilenameA), "Missing file: " + expectedFilenameA);
 
         String[] additionalHeaders = new String[] { "foo", "bar" };
 
-        // Note that the participant version field in the CSV uses the version in the row, even if historical is set to
-        // false. We know that we're using the current (non-historical) version because the data groups are updated.
         File fileA = filesByName.get(expectedFilenameA);
         Map<String, String[]> expectedRowsByRecordIdA = new HashMap<>();
-        expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, assessmentGuidA,
+        expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, sharedAssessmentGuid,
                 assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_1A.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_2 + "," + DATA_GROUP_TEST_USER,
-                "metadata1a", "data1a" });
-        assertCsvFile(fileA, additionalHeaders, expectedRowsByRecordIdA);
-    }
-
-    @Test
-    public void fallBackToStudyParticipant() throws Exception {
-        // Delete the participant versions for participant 1. This way, we fall back to the study participant.
-        admin.getClient(InternalApi.class).deleteAllParticipantVersionsForUser(user1.getUserId()).execute();
-
-        UploadTableRow row1a = new UploadTableRow().recordId(RECORD_ID_1A).assessmentGuid(assessmentGuidA)
-                .createdOn(CREATED_ON_1A).testData(true).healthCode(participant1.getHealthCode()).participantVersion(1)
-                .putMetadataItem("foo", "metadata1a").putDataItem("bar", "data1a");
-        createUploadTableRow(row1a);
-
-        // Run worker.
-        String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA),
-                false, zipFileSuffix);
-
-        // Verify files.
-        assertEquals(filesByName.size(), 1);
-        String expectedFilenameA = studyId + "-" + STUDY_NAME_TRIMMED + "-" + assessmentGuidA + "-" +
-                ASSESSMENT_A_TITLE_TRIMMED + ".csv";
-        assertTrue(filesByName.containsKey(expectedFilenameA), "Missing file: " + expectedFilenameA);
-
-        String[] additionalHeaders = new String[] { "foo", "bar" };
-
-        // Note that the participant version field in the CSV uses the version in the row, even if historical is set to
-        // false. We know that we're using the current (non-historical) version because the data groups are updated.
-        File fileA = filesByName.get(expectedFilenameA);
-        Map<String, String[]> expectedRowsByRecordIdA = new HashMap<>();
-        expectedRowsByRecordIdA.put(RECORD_ID_1A, new String[] { RECORD_ID_1A, studyId, STUDY_NAME, assessmentGuidA,
-                assessmentIdA, "1", ASSESSMENT_A_TITLE, CREATED_ON_1A.toString(), "true", participant1.getHealthCode(),
-                "1", EXTERNAL_ID_1, DATA_GROUP_1 + "," + DATA_GROUP_SDK_INT_2 + "," + DATA_GROUP_TEST_USER,
-                "metadata1a", "data1a" });
+                "1", "metadata1a", "data1a" });
         assertCsvFile(fileA, additionalHeaders, expectedRowsByRecordIdA);
     }
 
@@ -467,8 +392,8 @@ public class UploadTableTest {
     }
 
     // Runs the worker, downloads the zip file, unzips the zip file, and returns a map of files keyed by the file name.
-    private static Map<String, File> runWorkerAndDownloadFiles(Set<String> assessmentGuids,
-            boolean useHistoricalParticipantVersion, String zipFileSuffix) throws Exception {
+    private static Map<String, File> runWorkerAndDownloadFiles(Set<String> assessmentGuids, String zipFileSuffix)
+            throws Exception {
         // We need to know the previous finish time so we can determine when the worker is finished.
         long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
                 WORKER_ID_CSV_WORKER);
@@ -481,7 +406,6 @@ public class UploadTableTest {
             requestBodyNode.set("assessmentGuids", DefaultObjectMapper.INSTANCE.valueToTree(assessmentGuids));
         }
         requestBodyNode.put("includeTestData", true);
-        requestBodyNode.put("useHistoricalParticipantVersion", useHistoricalParticipantVersion);
         requestBodyNode.put("zipFileSuffix", zipFileSuffix);
 
         ObjectNode requestNode = DefaultObjectMapper.INSTANCE.createObjectNode();
