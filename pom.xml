@@ -61,12 +61,12 @@
         <dependency>
             <groupId>org.sagebionetworks</groupId>
             <artifactId>synapseJavaClient</artifactId>
-            <version>386.0</version>
+            <version>475.0</version>
         </dependency>
         <dependency>
             <groupId>org.sagebionetworks.bridge</groupId>
             <artifactId>rest-client</artifactId>
-            <version>0.25.30</version>
+            <version>0.25.32</version>
         </dependency>
         <dependency>
             <groupId>org.testng</groupId>
