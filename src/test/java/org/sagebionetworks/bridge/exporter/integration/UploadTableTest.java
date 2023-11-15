@@ -3,6 +3,7 @@ package org.sagebionetworks.bridge.exporter.integration;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
 import java.io.File;
@@ -10,6 +11,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -26,6 +28,8 @@ import com.amazonaws.services.s3.AmazonS3Client;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.ByteStreams;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.fluent.Request;
 import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,11 +48,16 @@ import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SharedAssessmentsApi;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
+import org.sagebionetworks.bridge.rest.api.UploadsApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.Enrollment;
+import org.sagebionetworks.bridge.rest.model.Role;
 import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.StudyParticipant;
+import org.sagebionetworks.bridge.rest.model.UploadTableJob;
+import org.sagebionetworks.bridge.rest.model.UploadTableJobResult;
+import org.sagebionetworks.bridge.rest.model.UploadTableJobStatus;
 import org.sagebionetworks.bridge.rest.model.UploadTableRow;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
@@ -90,6 +99,24 @@ public class UploadTableTest {
             "participantVersion",
     };
 
+    private static class JobGuidAndFiles {
+        private final String jobGuid;
+        private final Map<String, File> filesByName;
+
+        public JobGuidAndFiles(String jobGuid, Map<String, File> filesByName) {
+            this.jobGuid = jobGuid;
+            this.filesByName = filesByName;
+        }
+
+        public String getJobGuid() {
+            return jobGuid;
+        }
+
+        public Map<String, File> getFilesByName() {
+            return filesByName;
+        }
+    }
+
     private static TestUser admin;
     private static String assessmentGuidA;
     private static String assessmentGuidB;
@@ -99,12 +126,14 @@ public class UploadTableTest {
     private static StudyParticipant participant1;
     private static StudyParticipant participant2;
     private static String rawDataBucket;
+    private static TestUser researcher;
     private static S3Helper s3Helper;
     private static String sharedAssessmentGuid;
     private static SqsHelper sqsHelper;
     private static String studyId;
     private static TestUser user1;
     private static TestUser user2;
+    private static TestUser worker;
     private static String workerSqsUrl;
 
     private Set<String> recordIdsToDelete;
@@ -161,7 +190,9 @@ public class UploadTableTest {
                 assessmentIdA).execute().body();
         sharedAssessmentGuid = sharedAssessment.getGuid();
 
-        // Create participants.
+        // Create researcher, worker, and participants.
+        researcher = TestUserHelper.createAndSignInUser(UploadTableTest.class, true, Role.RESEARCHER);
+        worker = TestUserHelper.createAndSignInUser(UploadTableTest.class, true, Role.WORKER);
         user1 = TestUserHelper.createAndSignInUser(UploadTableTest.class, true);
         user2 = TestUserHelper.createAndSignInUser(UploadTableTest.class, true);
 
@@ -194,7 +225,13 @@ public class UploadTableTest {
 
     @AfterClass
     public static void afterClass() throws IOException {
-        // Delete test users and participant versions.
+        // Delete test researcher, worker, and users.
+        if (researcher != null) {
+            researcher.signOutAndDeleteUser();
+        }
+        if (worker != null) {
+            worker.signOutAndDeleteUser();
+        }
         if (user1 != null) {
             user1.signOutAndDeleteUser();
         }
@@ -251,8 +288,9 @@ public class UploadTableTest {
         createUploadTableRow(row2b);
 
         // Run worker.
-        String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(null, zipFileSuffix);
+        JobGuidAndFiles jobGuidAndFiles = runWorker();
+        String jobGuid = jobGuidAndFiles.getJobGuid();
+        Map<String, File> filesByName = jobGuidAndFiles.getFilesByName();
 
         // Verify files.
         assertEquals(filesByName.size(), 2);
@@ -284,6 +322,24 @@ public class UploadTableTest {
                 assessmentIdB, "1", ASSESSMENT_B_TITLE, CREATED_ON_2B.toString(), "true", participant2.getHealthCode(),
                 "1", "metadata2b", "data2b" });
         assertCsvFile(fileB, additionalHeaders, expectedRowsByRecordIdB);
+
+        // Verify table job APIs. We've only had one job in this study, so the most recent one should have a matching
+        // job GUID.
+        List<UploadTableJob> jobList = researcher.getClient(UploadsApi.class).listUploadTableJobsForStudy(studyId,
+                0, 5).execute().body().getItems();
+        assertEquals(jobList.size(), 1);
+        assertEquals(jobList.get(0).getJobGuid(), jobGuid);
+
+        ForWorkersApi workerApi = worker.getClient(ForWorkersApi.class);
+        UploadTableJob job = workerApi.getUploadTableJobForWorker(TEST_APP_ID, studyId, jobGuid).execute().body();
+        assertEquals(job.getStatus(), UploadTableJobStatus.SUCCEEDED);
+
+        // Just for fun, update the table job, to verify that the APIs work.
+        job.setStatus(UploadTableJobStatus.FAILED);
+        workerApi.updateUploadTableJobForWorker(TEST_APP_ID, studyId, jobGuid, job).execute();
+
+        job = workerApi.getUploadTableJobForWorker(TEST_APP_ID, studyId, jobGuid).execute().body();
+        assertEquals(job.getStatus(), UploadTableJobStatus.FAILED);
     }
 
     @Test
@@ -301,7 +357,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
+        Map<String, File> filesByName = runWorkerWithAssessmentGuids(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 1);
@@ -336,7 +392,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
+        Map<String, File> filesByName = runWorkerWithAssessmentGuids(ImmutableSet.of(assessmentGuidA), zipFileSuffix);
 
         // Verify files.
         assertEquals(filesByName.size(), 1);
@@ -366,7 +422,7 @@ public class UploadTableTest {
 
         // Run worker.
         String zipFileSuffix = TestUtils.randomIdentifier(UploadTableTest.class);
-        Map<String, File> filesByName = runWorkerAndDownloadFiles(ImmutableSet.of(sharedAssessmentGuid),
+        Map<String, File> filesByName = runWorkerWithAssessmentGuids(ImmutableSet.of(sharedAssessmentGuid),
                 zipFileSuffix);
 
         // Verify files.
@@ -391,8 +447,40 @@ public class UploadTableTest {
         recordIdsToDelete.add(row.getRecordId());
     }
 
+    private static JobGuidAndFiles runWorker() throws Exception {
+        // We need to know the previous finish time so we can determine when the worker is finished.
+        long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
+                WORKER_ID_CSV_WORKER);
+
+        // Create request.
+        UploadsApi researcherUploadsApi = researcher.getClient(UploadsApi.class);
+        String jobGuid = researcherUploadsApi.requestUploadTableForStudy(studyId).execute().body().getJobGuid();
+
+        // Wait until the worker is finished.
+        TestUtils.pollWorkerLog(ddbWorkerLogTable, WORKER_ID_CSV_WORKER, previousFinishTime);
+
+        // Get the S3 URL from Bridge Server.
+        UploadTableJobResult jobResult = researcherUploadsApi.getUploadTableJobResult(studyId, jobGuid).execute()
+                .body();
+        assertEquals(jobResult.getStatus(), UploadTableJobStatus.SUCCEEDED);
+        assertNotNull(jobResult.getUrl());
+        assertNotNull(jobResult.getExpiresOn());
+
+        HttpResponse responseForPresignedUrl = Request.Get(jobResult.getUrl()).execute().returnResponse();
+        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
+
+        Map<String, File> filesByName;
+        try (InputStream inputStream = responseForPresignedUrl.getEntity().getContent()) {
+            filesByName = unzipStream(inputStream);
+        }
+
+        return new JobGuidAndFiles(jobGuid, filesByName);
+    }
+
     // Runs the worker, downloads the zip file, unzips the zip file, and returns a map of files keyed by the file name.
-    private static Map<String, File> runWorkerAndDownloadFiles(Set<String> assessmentGuids, String zipFileSuffix)
+    // This is the older test harness, which calls the worker directly. This tests features that aren't currently
+    // exposed through the API.
+    private static Map<String, File> runWorkerWithAssessmentGuids(Set<String> assessmentGuids, String zipFileSuffix)
             throws Exception {
         // We need to know the previous finish time so we can determine when the worker is finished.
         long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
@@ -417,16 +505,20 @@ public class UploadTableTest {
         // Wait until the worker is finished.
         TestUtils.pollWorkerLog(ddbWorkerLogTable, WORKER_ID_CSV_WORKER, previousFinishTime);
 
-        // Until https://sagebionetworks.jira.com/browse/DHP-1026 is implemented, we have to download the CSV  manually
-        // from S3.
+        // Because we called the worker directly, we don't have a job GUID, so we need to download from S3 directly.
         String zipFilename = studyId + "-" + STUDY_NAME_TRIMMED + "-" + zipFileSuffix + ".zip";
         File zipFile = File.createTempFile(zipFilename, ".zip");
         s3Helper.downloadS3File(rawDataBucket, zipFilename, zipFile);
         LOG.info("Downloaded zip file: " + zipFile.getAbsolutePath() + " (" + zipFile.length() + " bytes)");
 
-        // Unzip.
+        try (FileInputStream fileInputStream = new FileInputStream(zipFile)) {
+            return unzipStream(fileInputStream);
+        }
+    }
+
+    private static Map<String, File> unzipStream(InputStream stream) throws IOException {
         Map<String, File> filesByName = new HashMap<>();
-        try (ZipInputStream zipInputStream = new ZipInputStream(new FileInputStream(zipFile))) {
+        try (ZipInputStream zipInputStream = new ZipInputStream(stream)) {
             ZipEntry zipEntry = zipInputStream.getNextEntry();
             while (zipEntry != null) {
                 String zipEntryName = zipEntry.getName();
@@ -445,7 +537,6 @@ public class UploadTableTest {
                 zipEntry = zipInputStream.getNextEntry();
             }
         }
-
         return filesByName;
     }
 
