@@ -83,7 +83,7 @@ public class UploadTableTest {
     private static final String RECORD_ID_2B = "record-id-2b";
     private static final String STUDY_NAME = "Upload Table: Test Study";
     private static final String STUDY_NAME_TRIMMED = "UploadTableTestStudy";
-    private static final String WORKER_ID_CSV_WORKER = "UploadCsvWorker";
+    static final String WORKER_ID_CSV_WORKER = "UploadCsvWorker";
 
     private static final String[] COMMON_COLUMNS = {
             "recordId",
@@ -516,7 +516,7 @@ public class UploadTableTest {
         }
     }
 
-    private static Map<String, File> unzipStream(InputStream stream) throws IOException {
+    static Map<String, File> unzipStream(InputStream stream) throws IOException {
         Map<String, File> filesByName = new HashMap<>();
         try (ZipInputStream zipInputStream = new ZipInputStream(stream)) {
             ZipEntry zipEntry = zipInputStream.getNextEntry();
@@ -540,7 +540,7 @@ public class UploadTableTest {
         return filesByName;
     }
 
-    private static void assertCsvFile(File csvFile, String[] additionalHeaders,
+    static void assertCsvFile(File csvFile, String[] additionalHeaders,
             Map<String, String[]> expectedRowsByRecordId) throws IOException {
         try (CSVReader csvFileReader = new CSVReader(new FileReader(csvFile))) {
             List<String[]> csvLines = csvFileReader.readAll();

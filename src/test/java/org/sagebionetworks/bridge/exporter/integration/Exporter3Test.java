@@ -8,8 +8,10 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
@@ -22,6 +24,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.auth.AWSCredentialsProvider;
@@ -78,12 +82,14 @@ import org.sagebionetworks.bridge.rest.api.ForAdminsApi;
 import org.sagebionetworks.bridge.rest.api.ForConsentedUsersApi;
 import org.sagebionetworks.bridge.rest.api.ForDevelopersApi;
 import org.sagebionetworks.bridge.rest.api.ForWorkersApi;
+import org.sagebionetworks.bridge.rest.api.InternalApi;
 import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.api.UploadsApi;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
+import org.sagebionetworks.bridge.rest.model.AssessmentConfig;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.ClientInfo;
 import org.sagebionetworks.bridge.rest.model.Demographic;
@@ -114,6 +120,8 @@ import org.sagebionetworks.bridge.rest.model.TimeWindow;
 import org.sagebionetworks.bridge.rest.model.Timeline;
 import org.sagebionetworks.bridge.rest.model.UploadRequest;
 import org.sagebionetworks.bridge.rest.model.UploadSession;
+import org.sagebionetworks.bridge.rest.model.UploadTableJobResult;
+import org.sagebionetworks.bridge.rest.model.UploadTableJobStatus;
 import org.sagebionetworks.bridge.rest.model.UploadTableRow;
 import org.sagebionetworks.bridge.s3.S3Helper;
 import org.sagebionetworks.bridge.sqs.SqsHelper;
@@ -122,7 +130,7 @@ import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
-@SuppressWarnings({ "ConstantConditions", "deprecation" })
+@SuppressWarnings({ "ConstantConditions", "deprecation", "OptionalGetWithoutIsPresent" })
 public class Exporter3Test {
     private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
 
@@ -132,6 +140,15 @@ public class Exporter3Test {
     private static final String CUSTOM_METADATA_KEY = "custom-metadata-key";
     private static final String CUSTOM_METADATA_KEY_SANITIZED = "custom_metadata_key";
     private static final String CUSTOM_METADATA_VALUE = "custom-metadata-value";
+    private static final String DATA_GROUP_SDK_INT_1 = "sdk-int-1";
+    private static final String DATA_GROUP_TEST_USER = "test_user";
+    private static final String START_DATE_STR = "2015-04-10T10:40:34.000-07:00";
+    private static final String END_DATE_STR = "2015-04-10T18:19:51.000-07:00";
+    private static final String DEVICE_INFO = "Integ Test Device Info";
+    private static final String EXTERNAL_ID = "external-id-1";
+    private static final String FILENAME_METADATA_JSON = "metadata.json";
+    private static final String FILENAME_ASSESSMENT_RESULT_JSON = "assessmentResult.json";
+    private static final String FRAMEWORK_IDENTIFIER_OPEN_BRIDGE_SURVEY = "health.bridgedigital.assessment";
     private static final String STUDY_ID = "study1";
     private static final String STUDY_2_ID = "study2";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
@@ -150,6 +167,90 @@ public class Exporter3Test {
     private static final ClientInfo CLIENT_INFO_FOR_USER = new ClientInfo().appName(APP_NAME_FOR_USER);
 
     private static final ExecutorService EXECUTOR_SERVICE = Executors.newCachedThreadPool();
+
+    // Simplified assessment config with only the relevant fields.
+    private static final String ASSESSMENT_CONFIG = "{\n" +
+            "  \"type\": \"assessment\",\n" +
+            "  \"identifier\":\"xhcsds\",\n" +
+            "  \"steps\": [\n" +
+            "    {\n" +
+            "      \"type\": \"choiceQuestion\",\n" +
+            "      \"identifier\": \"choiceQ1\",\n" +
+            "      \"title\": \"Choose which question to answer\",\n" +
+            "      \"baseType\": \"integer\",\n" +
+            "      \"singleChoice\": true,\n" +
+            "      \"choices\": [\n" +
+            "        {\n" +
+            "          \"value\": 1,\n" +
+            "          \"text\": \"Enter some text\"\n" +
+            "        },\n" +
+            "        {\n" +
+            "          \"value\": 2,\n" +
+            "          \"text\": \"Birth year\"\n" +
+            "        }\n" +
+            "      ]\n" +
+            "    },\n" +
+            "    {\n" +
+            "      \"type\": \"simpleQuestion\",\n" +
+            "      \"identifier\": \"simpleQ1\",\n" +
+            "      \"title\": \"Enter some text\",\n" +
+            "      \"inputItem\": {\n" +
+            "        \"type\": \"string\",\n" +
+            "        \"placeholder\": \"I like cake\"\n" +
+            "      }\n" +
+            "    }\n" +
+            "  ]\n" +
+            "}";
+
+    // Simplified metadata.json file with only the relevant fields.
+    private static final String METADATA_JSON_CONTENT = "{\n" +
+            "   \"deviceInfo\":\"" + DEVICE_INFO + "\",\n" +
+            "   \"startDate\":\"" + START_DATE_STR + "\",\n" +
+            "   \"endDate\":\"" + END_DATE_STR +  "\"\n" +
+            "}";
+
+    // Simplified assessmentResults.json file with only the relevant fields.
+    private static final String ASSESSMENT_RESULTS_JSON_CONTENT = "{\n" +
+            "   \"type\": \"assessment\",\n" +
+            "   \"identifier\":\"xhcsds\",\n" +
+            "   \"stepHistory\":[\n" +
+            "      {\n" +
+            "         \"type\":\"answer\",\n" +
+            "         \"identifier\":\"choiceQ1\",\n" +
+            "         \"answerType\":{\n" +
+            "            \"type\":\"integer\"\n" +
+            "         },\n" +
+            "         \"value\":1\n" +
+            "      },\n" +
+            "      {\n" +
+            "         \"type\":\"answer\",\n" +
+            "         \"identifier\":\"simpleQ1\",\n" +
+            "         \"answerType\":{\n" +
+            "            \"type\":\"string\"\n" +
+            "         },\n" +
+            "         \"value\":\"test text\"\n" +
+            "      }\n" +
+            "   ]\n" +
+            "}";
+
+    private static final Map<String, String> SURVEY_UPLOAD_CONTENT_BY_FILENAME = ImmutableMap.of(
+            FILENAME_METADATA_JSON, METADATA_JSON_CONTENT,
+            FILENAME_ASSESSMENT_RESULT_JSON, ASSESSMENT_RESULTS_JSON_CONTENT);
+
+    private static final String[] SURVEY_UPLOAD_TABLE_COLUMNS = {
+            "clientInfo",
+            "dataGroups",
+            "deviceInfo",
+            "endDate",
+            "externalId",
+            "sessionGuid",
+            "sessionName",
+            "sessionStartEventId",
+            "startDate",
+            "userAgent",
+            "choiceQ1",
+            "simpleQ1",
+    };
 
     private static TestUser adminDeveloperWorker;
     private static TestUser researcher;
@@ -173,6 +274,7 @@ public class Exporter3Test {
     private TestUser user;
     private Schedule2 schedule;
     private List<String> subscriptionArnList;
+    private List<String> tableRowsToDelete;
     private Assessment assessment;
 
     @BeforeClass
@@ -242,13 +344,19 @@ public class Exporter3Test {
 
     @BeforeMethod
     public void before() throws Exception {
-        // Note: Consent also enrolls the participant in study1.
+        // Note: Consent also enrolls the participant in study1, but we want to add an external ID.
         user = new TestUserHelper.Builder(Exporter3Test.class).withClientInfo(CLIENT_INFO_FOR_USER)
                 .withConsentUser(true).createAndSignInUser();
+
+        Enrollment enrollment1 = new Enrollment().userId(user.getUserId()).externalId(EXTERNAL_ID + ":" + STUDY_ID);
+        adminDeveloperWorker.getClient(StudiesApi.class).enrollParticipant(STUDY_ID, enrollment1).execute();
+
         adminDeveloperWorker.getClient(StudiesApi.class)
-                .enrollParticipant(STUDY_2_ID, new Enrollment().userId(user.getUserId())).execute().body();
+                .enrollParticipant(STUDY_2_ID, new Enrollment().userId(user.getUserId())).execute();
 
         subscriptionArnList = new ArrayList<>();
+
+        tableRowsToDelete = new ArrayList<>();
     }
 
     @AfterMethod
@@ -257,10 +365,19 @@ public class Exporter3Test {
             snsClient.unsubscribe(subscriptionArn);
         }
 
+        // Delete upload table rows.
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        for (String tableRowRecordId : tableRowsToDelete) {
+            admin.getClient(UploadsApi.class).deleteUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID,
+                    tableRowRecordId).execute();
+        }
+
+        // Delete participant version and user.
         if (user != null) {
+            adminDeveloperWorker.getClient(InternalApi.class).deleteAllParticipantVersionsForUser(user.getUserId())
+                    .execute();
             user.signOutAndDeleteUser();
         }
-        TestUser admin = TestUserHelper.getSignedInAdmin();
         if (schedule != null) {
             SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
             schedulesApi.deleteSchedule(schedule.getGuid()).execute();
@@ -585,13 +702,26 @@ public class Exporter3Test {
     public void uploadWithScheduleContext() throws Exception {
         TestUser admin = TestUserHelper.getSignedInAdmin();
         AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
+        ParticipantsApi participantsApi = admin.getClient(ParticipantsApi.class);
         SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+        StudiesApi studiesApi = admin.getClient(StudiesApi.class);
         UploadsApi uploadsApi = admin.getClient(UploadsApi.class);
-        
+
+        // Get the user's healthcode.
+        String userId = user.getUserId();
+        StudyParticipant participant = participantsApi.getParticipantById(userId, false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // Give participant  data group.
+        participant.dataGroups(ImmutableList.of(DATA_GROUP_SDK_INT_1));
+        participantsApi.updateParticipant(userId, participant).execute();
+
+        // Make Open Bridge survey assessment.
         String assessmentId = getClass().getSimpleName() + "-" + RandomStringUtils.randomAlphabetic(10);
-        
+
         assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
-                .identifier(assessmentId).phase(Assessment.PhaseEnum.DRAFT);
+                .identifier(assessmentId).frameworkIdentifier(FRAMEWORK_IDENTIFIER_OPEN_BRIDGE_SURVEY)
+                .phase(Assessment.PhaseEnum.DRAFT);
         assessment = assessmentsApi.createAssessment(assessment).execute().body();
 
         schedule = new Schedule2();
@@ -615,7 +745,23 @@ public class Exporter3Test {
         schedule = schedulesApi.saveScheduleForStudy(STUDY_ID, schedule).execute().body();
         
         Timeline timeline = schedulesApi.getTimelineForStudy(STUDY_ID).execute().body();
-        
+
+        // Update assessment config with basic survey config.
+        AssessmentConfig assessmentConfig = assessmentsApi.getAssessmentConfig(assessment.getGuid()).execute().body();
+        assessmentConfig.setConfig(ASSESSMENT_CONFIG);
+        assessmentsApi.updateAssessmentConfig(assessment.getGuid(), assessmentConfig).execute();
+
+        // Get study.
+        Study study = studiesApi.getStudy(STUDY_ID).execute().body();
+
+        // Make upload. This is a zip file with two files in it, metadata.json and assessmentResult.json.
+        byte[] zipFileContent = zip(SURVEY_UPLOAD_CONTENT_BY_FILENAME);
+
+        // todo the zip file seems to be malformed.
+        File tmpZipFile = File.createTempFile("test", ".zip");
+        Files.write(zipFileContent, tmpZipFile);
+        LOG.info("Creating temp file: " + tmpZipFile.getAbsolutePath());
+
         // Could also use the session instanceGuid, it doesn't matter. 
         String instanceGuid = timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid();
 
@@ -640,19 +786,64 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        String recordID = testUpload(UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+        String recordId = testUpload(zipFileContent, false, userMetadata, expectedMetadata);
+        tableRowsToDelete.add(recordId);
 
         // Check that UploadTableRow got created
-        UploadTableRow tableRow = uploadsApi.getUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID, recordID).execute().body();
+        UploadTableRow tableRow = uploadsApi.getUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID, recordId).execute().body();
         assertNotNull(tableRow);
+        assertEquals(tableRow.getAppId(), TEST_APP_ID);
         assertEquals(tableRow.getStudyId(), STUDY_ID);
+        assertEquals(tableRow.getRecordId(), recordId);
         assertEquals(tableRow.getAssessmentGuid(), assessment.getGuid());
-        assertEquals(tableRow.getRecordId(), recordID);
-        assertEquals(tableRow.getMetadata().get("sessionGuid"), expectedMetadata.get("sessionGuid"));
-        assertEquals(tableRow.getMetadata().get("sessionStartEventId"), expectedMetadata.get("sessionStartEventId"));
-        assertEquals(tableRow.getMetadata().get("sessionName"), expectedMetadata.get("sessionName"));
-        assertNotNull(tableRow.getMetadata().get("clientInfo"));
+        assertNotNull(tableRow.getCreatedOn());
+        assertEquals(tableRow.getHealthCode(), healthCode);
+        assertEquals(tableRow.getParticipantVersion().intValue(), 1);
+        assertTrue(tableRow.isTestData());
 
+        // Table row metadata.
+        Map<String, String> tableRowMetadataMap = tableRow.getMetadata();
+        assertTrue(tableRowMetadataMap.get("clientInfo").contains(APP_NAME_FOR_USER));
+        assertTrue(tableRowMetadataMap.get("userAgent").startsWith(APP_NAME_FOR_USER));
+        assertEquals(tableRowMetadataMap.get("sessionGuid"), expectedMetadata.get("sessionGuid"));
+        assertEquals(tableRowMetadataMap.get("sessionStartEventId"), expectedMetadata.get("sessionStartEventId"));
+        assertEquals(tableRowMetadataMap.get("sessionName"), expectedMetadata.get("sessionName"));
+        assertEquals(tableRowMetadataMap.get("dataGroups"), DATA_GROUP_SDK_INT_1 + "," +
+                DATA_GROUP_TEST_USER);
+        assertEquals(tableRowMetadataMap.get("externalId"), EXTERNAL_ID);
+        assertEquals(tableRowMetadataMap.get("startDate"), START_DATE_STR);
+        assertEquals(tableRowMetadataMap.get("endDate"), END_DATE_STR);
+
+        // Table row data.
+        Map<String, String> tableRowDataMap = tableRow.getData();
+        assertEquals(tableRowDataMap.get("choiceQ1"), "1");
+        assertEquals(tableRowDataMap.get("simpleQ1"), "test text");
+
+        // Now request the actual CSV file and verify it.
+        Map<String, File> csvResultFilesByName = runCsvWorker();
+        assertEquals(csvResultFilesByName.size(), 1);
+
+        // This upload is in study1, so there might be rows from old tests or other tests. Find the filename that
+        // contains our assessment GUID.
+        File csvFile = null;
+        for (File oneCsvFile : csvResultFilesByName.values()) {
+            if (oneCsvFile.getName().contains(assessment.getGuid())) {
+                csvFile = oneCsvFile;
+                break;
+            }
+        }
+        assertNotNull(csvFile, "Could not find CSV file for assessment " + assessment.getGuid());
+
+        // Since this assessment was freshly created for this test, we know there's only one row.
+        Map<String, String[]> expectedRowsMap = new HashMap<>();
+        expectedRowsMap.put(recordId, new String[] { recordId, STUDY_ID, study.getName(), assessment.getGuid(),
+                assessmentId, "1", assessmentId, tableRow.getCreatedOn().toString(), "true", healthCode, "1",
+                tableRowMetadataMap.get("clientInfo"), DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER, DEVICE_INFO,
+                END_DATE_STR, EXTERNAL_ID, tableRowMetadataMap.get("sessionGuid"),
+                tableRowMetadataMap.get("sessionName"), tableRowMetadataMap.get("sessionStartEventId"), START_DATE_STR,
+                tableRowMetadataMap.get("userAgent"), "1", "test text"
+        });
+        UploadTableTest.assertCsvFile(csvFile, SURVEY_UPLOAD_TABLE_COLUMNS, expectedRowsMap);
     }
 
     @Test
@@ -986,6 +1177,27 @@ public class Exporter3Test {
         }
     }
 
+    @SuppressWarnings("SameParameterValue")
+    private static byte[] zip(Map<String, String> contentByFileName) throws IOException {
+        // The double nested try loop is required, because we need to close the ZipOutputStream before we convert the
+        // ByteArrayOutputStream into bytes.
+        try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream()) {
+            try (ZipOutputStream zipOutputStream = new ZipOutputStream(byteArrayOutputStream)) {
+                for (Map.Entry<String, String> contentEntry : contentByFileName.entrySet()) {
+                    String contentFilename = contentEntry.getKey();
+                    String content = contentEntry.getValue();
+
+                    ZipEntry oneZipEntry = new ZipEntry(contentFilename);
+                    zipOutputStream.putNextEntry(oneZipEntry);
+                    zipOutputStream.write(content.getBytes(StandardCharsets.UTF_8));
+                    zipOutputStream.closeEntry();
+                }
+            }
+
+            return byteArrayOutputStream.toByteArray();
+        }
+    }
+
     private void testUpload(byte[] content, boolean encrypted) throws Exception {
         testUpload(content, encrypted,
                 ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
@@ -1021,9 +1233,9 @@ public class Exporter3Test {
 
         // Verify Synapse and S3.
         ExportedRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
-                false, expectedMetadata);
+                false, expectedMetadata, content);
         ExportedRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
-                true, expectedMetadata);
+                true, expectedMetadata, content);
 
         // Verify the record in Bridge.
         ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
@@ -1037,9 +1249,9 @@ public class Exporter3Test {
         // Verify the presigned download url for a health record is generated and contains the data expected.
         String url = record.getDownloadUrl();
         HttpResponse responseForPresignedUrl = Request.Get(url).execute().returnResponse();
-        String contentForPresignedUrl = EntityUtils.toString(responseForPresignedUrl.getEntity());
+        byte[] contentForPresignedUrl = EntityUtils.toByteArray(responseForPresignedUrl.getEntity());
         assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
-        assertEquals(UPLOAD_CONTENT, contentForPresignedUrl.getBytes(StandardCharsets.UTF_8));
+        assertEquals(content, contentForPresignedUrl);
 
         DateTime fiftyMinsAfter = DateTime.now().plusMinutes(50);
         assertTrue(record.getDownloadExpiration().isAfter(fiftyMinsAfter));
@@ -1130,7 +1342,7 @@ public class Exporter3Test {
     }
 
     private ExportedRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
-            Map<String,String> expectedMetadata) throws Exception {
+            Map<String,String> expectedMetadata, byte[] expectedContent) throws Exception {
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
         String todaysDateString = LocalDate.now(TestUtils.LOCAL_TIME_ZONE).toString();
@@ -1174,7 +1386,7 @@ public class Exporter3Test {
             expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + todaysDateString + '/' + exportedFilename;
         }
         byte[] s3Bytes = s3Helper.readS3FileAsBytes(rawDataBucket, expectedS3Key);
-        assertEquals(s3Bytes, UPLOAD_CONTENT);
+        assertEquals(s3Bytes, expectedContent);
 
         ObjectMetadata s3Metadata = s3Helper.getObjectMetadata(rawDataBucket, expectedS3Key);
         assertEquals(s3Metadata.getSSEAlgorithm(), ObjectMetadata.AES_256_SERVER_SIDE_ENCRYPTION);
@@ -1315,5 +1527,38 @@ public class Exporter3Test {
 
         DateTime uploadedOn = DateTime.parse(metadataMap.get("uploadedOn"));
         assertTrue(uploadedOn.isAfter(oneHourAgo));
+    }
+
+    private static Map<String, File> runCsvWorker() throws Exception {
+        // We need to know the previous finish time so we can determine when the worker is finished.
+        long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
+                UploadTableTest.WORKER_ID_CSV_WORKER);
+
+        // Create request.
+        UploadsApi researcherUploadsApi = researcher.getClient(UploadsApi.class);
+        String jobGuid = researcherUploadsApi.requestUploadTableForStudy(STUDY_ID).execute().body().getJobGuid();
+
+        // Wait until the worker is finished.
+        // Note that the server has logic to dedupe CSV requests every 5 minutes. If you run this test more than once
+        // per 5 minutes, it will fail. If you need to do this for whatever reason, you should temporarily comment out
+        // that code in BridgeServer. (This should never come up under normal situations.)
+        TestUtils.pollWorkerLog(ddbWorkerLogTable, UploadTableTest.WORKER_ID_CSV_WORKER, previousFinishTime);
+
+        // Get the S3 URL from Bridge Server.
+        UploadTableJobResult jobResult = researcherUploadsApi.getUploadTableJobResult(STUDY_ID, jobGuid).execute()
+                .body();
+        assertEquals(jobResult.getStatus(), UploadTableJobStatus.SUCCEEDED);
+        assertNotNull(jobResult.getUrl());
+        assertNotNull(jobResult.getExpiresOn());
+
+        HttpResponse responseForPresignedUrl = Request.Get(jobResult.getUrl()).execute().returnResponse();
+        assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
+
+        Map<String, File> filesByName;
+        try (InputStream inputStream = responseForPresignedUrl.getEntity().getContent()) {
+            filesByName = UploadTableTest.unzipStream(inputStream);
+        }
+
+        return filesByName;
     }
 }
