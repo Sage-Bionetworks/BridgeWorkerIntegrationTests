@@ -627,7 +627,10 @@ public class Exporter3Test {
         expectedMetadata.put("assessmentInstanceGuid", 
                 timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid());
         expectedMetadata.put("sessionInstanceGuid", timeline.getSchedule().get(0).getInstanceGuid());
+        String sessionRefId = timeline.getSchedule().get(0).getRefGuid();
+        String sessionName = timeline.getSessions().stream().filter(s -> s.getGuid().equals(sessionRefId)).findFirst().get().getLabel();
         expectedMetadata.put("sessionGuid", timeline.getSchedule().get(0).getRefGuid());
+        expectedMetadata.put("sessionName", sessionName);
         expectedMetadata.put("sessionInstanceStartDay", timeline.getSchedule().get(0).getStartDay().toString());
         expectedMetadata.put("sessionInstanceEndDay", timeline.getSchedule().get(0).getEndDay().toString());
         expectedMetadata.put("sessionStartEventId", "enrollment");
