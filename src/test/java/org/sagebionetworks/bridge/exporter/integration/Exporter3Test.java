@@ -130,7 +130,7 @@ import org.sagebionetworks.bridge.user.TestUser;
 import org.sagebionetworks.bridge.user.TestUserHelper;
 import org.sagebionetworks.bridge.util.IntegTestUtils;
 
-@SuppressWarnings({ "ConstantConditions", "deprecation", "OptionalGetWithoutIsPresent" })
+@SuppressWarnings({ "ConstantConditions", "deprecation", "OptionalGetWithoutIsPresent", "SameParameterValue" })
 public class Exporter3Test {
     private static final Logger LOG = LoggerFactory.getLogger(Exporter3Test.class);
 
@@ -690,12 +690,12 @@ public class Exporter3Test {
         BcCmsEncryptor encryptor = new BcCmsEncryptor(cert, null);
         byte[] encryptedUploadContent = encryptor.encrypt(UPLOAD_CONTENT);
 
-        testUpload(encryptedUploadContent, true);
+        testUpload(encryptedUploadContent, UPLOAD_CONTENT, true);
     }
 
     @Test
     public void unencryptedUpload() throws Exception {
-        testUpload(UPLOAD_CONTENT, false);
+        testUpload(UPLOAD_CONTENT, UPLOAD_CONTENT, false);
     }
     
     @Test
@@ -757,7 +757,6 @@ public class Exporter3Test {
         // Make upload. This is a zip file with two files in it, metadata.json and assessmentResult.json.
         byte[] zipFileContent = zip(SURVEY_UPLOAD_CONTENT_BY_FILENAME);
 
-        // todo the zip file seems to be malformed.
         File tmpZipFile = File.createTempFile("test", ".zip");
         Files.write(zipFileContent, tmpZipFile);
         LOG.info("Creating temp file: " + tmpZipFile.getAbsolutePath());
@@ -786,7 +785,7 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        String recordId = testUpload(zipFileContent, false, userMetadata, expectedMetadata);
+        String recordId = testUpload(zipFileContent, zipFileContent, false, userMetadata, expectedMetadata);
         tableRowsToDelete.add(recordId);
 
         // Check that UploadTableRow got created
@@ -1198,13 +1197,14 @@ public class Exporter3Test {
         }
     }
 
-    private void testUpload(byte[] content, boolean encrypted) throws Exception {
-        testUpload(content, encrypted,
+    private void testUpload(byte[] content, byte[] expectedContent, boolean encrypted) throws Exception {
+        testUpload(content, expectedContent, encrypted,
                 ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
                 ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
     }
     
-    private String testUpload(byte[] content, boolean encrypted, Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
+    private String testUpload(byte[] content, byte[] expectedContent, boolean encrypted,
+            Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
         // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
         // so that the test can succeed.
         ParticipantsApi participantsApi = user.getClient(ParticipantsApi.class);
@@ -1233,9 +1233,9 @@ public class Exporter3Test {
 
         // Verify Synapse and S3.
         ExportedRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
-                false, expectedMetadata, content);
+                false, expectedMetadata, expectedContent);
         ExportedRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
-                true, expectedMetadata, content);
+                true, expectedMetadata, expectedContent);
 
         // Verify the record in Bridge.
         ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
@@ -1251,7 +1251,7 @@ public class Exporter3Test {
         HttpResponse responseForPresignedUrl = Request.Get(url).execute().returnResponse();
         byte[] contentForPresignedUrl = EntityUtils.toByteArray(responseForPresignedUrl.getEntity());
         assertEquals(200, responseForPresignedUrl.getStatusLine().getStatusCode());
-        assertEquals(content, contentForPresignedUrl);
+        assertEquals(expectedContent, contentForPresignedUrl);
 
         DateTime fiftyMinsAfter = DateTime.now().plusMinutes(50);
         assertTrue(record.getDownloadExpiration().isAfter(fiftyMinsAfter));
