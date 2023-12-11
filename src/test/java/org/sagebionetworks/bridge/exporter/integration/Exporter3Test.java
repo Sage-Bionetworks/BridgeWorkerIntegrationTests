@@ -3,6 +3,7 @@ package org.sagebionetworks.bridge.exporter.integration;
 import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
@@ -810,6 +811,7 @@ public class Exporter3Test {
         assertEquals(tableRowMetadataMap.get("dataGroups"), DATA_GROUP_SDK_INT_1 + "," +
                 DATA_GROUP_TEST_USER);
         assertEquals(tableRowMetadataMap.get("externalId"), EXTERNAL_ID);
+        assertEquals(tableRowMetadataMap.get("deviceInfo"), DEVICE_INFO);
         assertEquals(tableRowMetadataMap.get("startDate"), START_DATE_STR);
         assertEquals(tableRowMetadataMap.get("endDate"), END_DATE_STR);
 
@@ -843,6 +845,104 @@ public class Exporter3Test {
                 tableRowMetadataMap.get("userAgent"), "1", "test text"
         });
         UploadTableTest.assertCsvFile(csvFile, SURVEY_UPLOAD_TABLE_COLUMNS, expectedRowsMap);
+    }
+
+    @Test
+    public void uploadWithCsvWithUnrecognizedAssessment() throws Exception {
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
+        ParticipantsApi participantsApi = admin.getClient(ParticipantsApi.class);
+        SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+        UploadsApi uploadsApi = admin.getClient(UploadsApi.class);
+
+        // Get the user's healthcode.
+        String userId = user.getUserId();
+        StudyParticipant participant = participantsApi.getParticipantById(userId, false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // Make assessment without a framework identifier.
+        String assessmentId = getClass().getSimpleName() + "-" + RandomStringUtils.randomAlphabetic(10);
+
+        assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
+                .identifier(assessmentId).frameworkIdentifier(null).phase(Assessment.PhaseEnum.DRAFT);
+        assessment = assessmentsApi.createAssessment(assessment).execute().body();
+
+        schedule = new Schedule2();
+        schedule.setName("Test Schedule [Exporter3Test]");
+        schedule.setDuration("P1W");
+
+        Session session = new Session();
+        session.setName("Once time task");
+        session.addStartEventIdsItem("enrollment");
+        session.setPerformanceOrder(SEQUENTIAL);
+
+        AssessmentReference2 ref = new AssessmentReference2()
+                .guid(assessment.getGuid()).appId(TEST_APP_ID)
+                .title(assessmentId)
+                .identifier(assessment.getIdentifier())
+                .revision(assessment.getRevision().intValue());
+        session.addAssessmentsItem(ref);
+        session.addTimeWindowsItem(new TimeWindow().startTime("00:00").expiration("P1W"));
+        schedule.addSessionsItem(session);
+
+        schedule = schedulesApi.saveScheduleForStudy(STUDY_ID, schedule).execute().body();
+
+        Timeline timeline = schedulesApi.getTimelineForStudy(STUDY_ID).execute().body();
+
+        // Could also use the session instanceGuid, it doesn't matter.
+        String instanceGuid = timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid();
+
+        Map<String,String> userMetadata = new HashMap<>();
+        userMetadata.put("instanceGuid", instanceGuid);
+
+        Map<String,String> expectedMetadata = new HashMap<>();
+        expectedMetadata.put("instanceGuid", instanceGuid);
+        expectedMetadata.put("assessmentGuid", assessment.getGuid());
+        expectedMetadata.put("assessmentId", assessment.getIdentifier());
+        expectedMetadata.put("assessmentRevision", assessment.getRevision().toString());
+        expectedMetadata.put("assessmentInstanceGuid",
+                timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid());
+        expectedMetadata.put("sessionInstanceGuid", timeline.getSchedule().get(0).getInstanceGuid());
+        String sessionRefId = timeline.getSchedule().get(0).getRefGuid();
+        String sessionName = timeline.getSessions().stream().filter(s -> s.getGuid().equals(sessionRefId)).findFirst().get().getLabel();
+        expectedMetadata.put("sessionGuid", timeline.getSchedule().get(0).getRefGuid());
+        expectedMetadata.put("sessionName", sessionName);
+        expectedMetadata.put("sessionInstanceStartDay", timeline.getSchedule().get(0).getStartDay().toString());
+        expectedMetadata.put("sessionInstanceEndDay", timeline.getSchedule().get(0).getEndDay().toString());
+        expectedMetadata.put("sessionStartEventId", "enrollment");
+        expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
+        expectedMetadata.put("scheduleGuid", schedule.getGuid());
+        expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
+        String recordId = testUpload(UPLOAD_CONTENT, UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+        tableRowsToDelete.add(recordId);
+
+        // Check that UploadTableRow got created
+        UploadTableRow tableRow = uploadsApi.getUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID, recordId).execute().body();
+        assertNotNull(tableRow);
+        assertEquals(tableRow.getAppId(), TEST_APP_ID);
+        assertEquals(tableRow.getStudyId(), STUDY_ID);
+        assertEquals(tableRow.getRecordId(), recordId);
+        assertEquals(tableRow.getAssessmentGuid(), assessment.getGuid());
+        assertNotNull(tableRow.getCreatedOn());
+        assertEquals(tableRow.getHealthCode(), healthCode);
+        assertEquals(tableRow.getParticipantVersion().intValue(), 1);
+        assertTrue(tableRow.isTestData());
+
+        // Table row metadata.
+        Map<String, String> tableRowMetadataMap = tableRow.getMetadata();
+        assertTrue(tableRowMetadataMap.get("clientInfo").contains(APP_NAME_FOR_USER));
+        assertTrue(tableRowMetadataMap.get("userAgent").startsWith(APP_NAME_FOR_USER));
+        assertEquals(tableRowMetadataMap.get("sessionGuid"), expectedMetadata.get("sessionGuid"));
+        assertEquals(tableRowMetadataMap.get("sessionStartEventId"), expectedMetadata.get("sessionStartEventId"));
+        assertEquals(tableRowMetadataMap.get("sessionName"), expectedMetadata.get("sessionName"));
+        assertEquals(tableRowMetadataMap.get("dataGroups"), DATA_GROUP_TEST_USER);
+        assertEquals(tableRowMetadataMap.get("externalId"), EXTERNAL_ID);
+        assertFalse(tableRowMetadataMap.containsKey("deviceInfo"));
+        assertFalse(tableRowMetadataMap.containsKey("startDate"));
+        assertFalse(tableRowMetadataMap.containsKey("endDate"));
+
+        // There is no row data.
+        assertTrue(tableRow.getData().isEmpty());
     }
 
     @Test
