@@ -9,29 +9,28 @@ import static org.testng.Assert.assertTrue;
 import java.io.IOException;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.commons.lang3.RandomStringUtils;
 import org.joda.time.DateTime;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Ignore;
 import org.testng.annotations.Test;
 
 import org.sagebionetworks.bridge.config.Config;
 import org.sagebionetworks.bridge.json.DefaultObjectMapper;
+import org.sagebionetworks.bridge.rest.api.AppsApi;
 import org.sagebionetworks.bridge.rest.api.AssessmentsApi;
-import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
-import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.api.StudyAdherenceApi;
 import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
 import org.sagebionetworks.bridge.rest.model.AdherenceReportSearch;
+import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentReference2;
 import org.sagebionetworks.bridge.rest.model.Schedule2;
 import org.sagebionetworks.bridge.rest.model.Session;
-import org.sagebionetworks.bridge.rest.model.Study;
 import org.sagebionetworks.bridge.rest.model.TestFilter;
 import org.sagebionetworks.bridge.rest.model.TimeWindow;
 import org.sagebionetworks.bridge.rest.model.WeeklyAdherenceReport;
@@ -46,18 +45,17 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
 
     private SqsHelper sqsHelper;
     private String workerSqsUrl;
-    private TestUser admin;
     private TestUser user;
     private String userId;
     
     private Schedule2 schedule;
     private Assessment assessment;
-    
-    SchedulesV2Api scheduleApi;
-    AssessmentsApi assessmentApi;
-    StudyAdherenceApi adherenceApi;
-    ParticipantsApi participantApi;
-    
+
+    private AppsApi appsApi;
+    private SchedulesV2Api scheduleApi;
+    private AssessmentsApi assessmentApi;
+    private StudyAdherenceApi adherenceApi;
+
     @BeforeMethod
     public void beforeMethod() throws Exception {
         Config bridgeConfig = TestUtils.loadConfig();
@@ -68,13 +66,13 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
         
         user = TestUserHelper.createAndSignInUser(getClass(), true);
         userId = user.getUserId();
-        
-        admin = TestUserHelper.getSignedInAdmin();
+
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        appsApi = admin.getClient(AppsApi.class);
         scheduleApi = admin.getClient(SchedulesV2Api.class);
         adherenceApi = admin.getClient(StudyAdherenceApi.class);
         assessmentApi = admin.getClient(AssessmentsApi.class);
-        participantApi = admin.getClient(ParticipantsApi.class);
-        
+
         // We need to create a schedule in study1 for this user if it doesn't exist.
         try {
             scheduleApi.getScheduleForStudy(STUDY_ID_1).execute().body();
@@ -125,21 +123,13 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
 
     @Test
     public void requestCaching() throws Exception {
-        // Conveniently, we're going to run this in the current hour
-        DateTime time = DateTime.now();
-        int hourOfDay = time.getHourOfDay();
-        String zoneId = time.getZone().getID();
-        
-        String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{"
-                + "\"selectedStudies\":{\"api\":[\"study1\"]}, \"defaultZoneId\":\""+zoneId+"\","
-                + "\"reportingHours\":["+hourOfDay+"]}}";
-        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
+        // Ensure adherence reports are enabled for app.
+        App app = appsApi.getUsersApp().execute().body();
+        app.setAdherenceReportEnabled(true);
+        appsApi.updateUsersApp(app).execute();
 
-        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
-        
-        // Wait. Let the worker do its thing.
-        Thread.sleep(8000L);
-        
+        executeWorker();
+
         // This should return our user...
         assertTrue( reportCreatedForUser() );
         
@@ -151,91 +141,35 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
     
     @Test
-    @Ignore
     public void requestCachingWrongHourOfDay() throws Exception {
-        // In this case, the hour of day will always be wrong, and so the request will be skipped.
+        // Ensure adherence reports are *not* enabled for app.
+        App app = appsApi.getUsersApp().execute().body();
+        app.setAdherenceReportEnabled(false);
+        appsApi.updateUsersApp(app).execute();
+
+        executeWorker();
+
+        // This should be false, no report was created
+        assertFalse( reportCreatedForUser() );
+    }
+
+    private void executeWorker() throws InterruptedException, JsonProcessingException {
+        // Conveniently, we're going to run this in the current hour
         DateTime time = DateTime.now();
-        int hourOfDay = (time.getHourOfDay() == 23) ? 0 : time.getHourOfDay()+1;
+        int hourOfDay = time.getHourOfDay();
         String zoneId = time.getZone().getID();
-        
+
         String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{"
                 + "\"selectedStudies\":{\"api\":[\"study1\"]}, \"defaultZoneId\":\""+zoneId+"\","
                 + "\"reportingHours\":["+hourOfDay+"]}}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
 
         sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
-        
+
         // Wait. Let the worker do its thing.
         Thread.sleep(8000L);
-        
-        // This should be false, no report was created
-        assertFalse( reportCreatedForUser() );
-        
-        // This should cascade delete the user's report
-        user.signOutAndDeleteUser();
-        user = null;
     }
 
-    @Test
-    @Ignore
-    public void requestCachingWrongTimeZone() throws Exception {
-        // In this case, the hour of day will always be wrong, and so the request will be skipped.
-        DateTime time = DateTime.now();
-        int hourOfDay = time.getHourOfDay();
-        String zoneId = (time.getZone().getID().equals("Europe/Paris")) ? "America/Chicago" : "Europe/Paris";
-        
-        Study study2 = admin.getClient(StudiesApi.class).getStudy("study2").execute().body();
-        study2.setStudyTimeZone(null);
-        admin.getClient(StudiesApi.class).updateStudy("study2", study2).execute();
-        
-        // Never the right time zone, does not process
-        String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{"
-                + "\"selectedStudies\":{\"api\":[\"study2\"]}, \"defaultZoneId\":\""+zoneId+"\","
-                + "\"reportingHours\":["+hourOfDay+"]}}";
-        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
-
-        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
-        
-        // Wait. Let the worker do its thing.
-        Thread.sleep(8000L);
-        
-        // This should be false, no report was created
-        assertFalse( reportCreatedForUser() );
-        
-        // This should cascade delete the user's report
-        user.signOutAndDeleteUser();
-        user = null;
-    }
-
-    @Test
-    @Ignore
-    public void requestCachingWrongStudy() throws Exception {
-        // In this case, the hour of day will be correct but the study is in a non-existent app, so nothing is generated
-        DateTime time = DateTime.now();
-        int hourOfDay = time.getHourOfDay();
-        String zoneId = time.getZone().getID();
-        
-        // Never the right study, does not process
-        String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{"
-                + "\"selectedStudies\":{\"foo\":[\"study1\"]},"
-                + "\"defaultZoneId\":\""+zoneId+"\","
-                + "\"reportingHours\":["+hourOfDay+"]"
-                + "}}";
-        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
-
-        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
-        
-        // Wait. Let the worker do its thing.
-        Thread.sleep(8000L);
-        
-        // This should be false, no report was created
-        assertFalse( reportCreatedForUser() );
-        
-        // This should cascade delete the user's report
-        user.signOutAndDeleteUser();
-        user = null;
-    }
-    
     private boolean reportCreatedForUser() throws Exception {
         int offset = 0;
         WeeklyAdherenceReportList list = null;
