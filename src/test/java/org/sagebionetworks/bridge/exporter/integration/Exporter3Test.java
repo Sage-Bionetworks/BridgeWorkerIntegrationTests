@@ -1,5 +1,6 @@
 package org.sagebionetworks.bridge.exporter.integration;
 
+import static org.sagebionetworks.bridge.exporter.integration.TestJsonKt.testArcDataJson_100534_85;
 import static org.sagebionetworks.bridge.rest.model.PerformanceOrder.SEQUENTIAL;
 import static org.sagebionetworks.bridge.util.IntegTestUtils.TEST_APP_ID;
 import static org.testng.Assert.assertEquals;
@@ -149,7 +150,9 @@ public class Exporter3Test {
     private static final String EXTERNAL_ID = "external-id-1";
     private static final String FILENAME_METADATA_JSON = "metadata.json";
     private static final String FILENAME_ASSESSMENT_RESULT_JSON = "assessmentResult.json";
+    private static final String FILENAME_ARC_RESULT_JSON = "data.json";
     private static final String FRAMEWORK_IDENTIFIER_OPEN_BRIDGE_SURVEY = "health.bridgedigital.assessment";
+    private static final String FRAMEWORK_IDENTIFIER_ARC_ASSESSMENT = "edu.wustl.arc";
     private static final String STUDY_ID = "study1";
     private static final String STUDY_2_ID = "study2";
     private static final byte[] UPLOAD_CONTENT = "This is the upload content".getBytes(StandardCharsets.UTF_8);
@@ -238,6 +241,10 @@ public class Exporter3Test {
             FILENAME_METADATA_JSON, METADATA_JSON_CONTENT,
             FILENAME_ASSESSMENT_RESULT_JSON, ASSESSMENT_RESULTS_JSON_CONTENT);
 
+    private static final Map<String, String> ARC_UPLOAD_CONTENT_BY_FILENAME = ImmutableMap.of(
+            FILENAME_METADATA_JSON, METADATA_JSON_CONTENT,
+            FILENAME_ARC_RESULT_JSON, testArcDataJson_100534_85);
+
     private static final String[] SURVEY_UPLOAD_TABLE_COLUMNS = {
             "clientInfo",
             "dataGroups",
@@ -251,6 +258,23 @@ public class Exporter3Test {
             "userAgent",
             "choiceQ1",
             "simpleQ1",
+    };
+
+    private static final String[] ARC_UPLOAD_TABLE_COLUMNS = {
+            "clientInfo",
+            "dataGroups",
+            "deviceInfo",
+            "endDate",
+            "sessionGuid",
+            "sessionName",
+            "sessionStartEventId",
+            "startDate",
+            "userAgent",
+            "symbolsAccuracy",
+            "symbolsCoV",
+            "symbolsMean",
+            "symbolsMedian",
+            "symbolsSD",
     };
 
     private static TestUser adminDeveloperWorker;
@@ -274,8 +298,10 @@ public class Exporter3Test {
 
     private TestUser user;
     private Schedule2 schedule;
+    private Schedule2 scheduleStudy2;
     private List<String> subscriptionArnList;
     private List<String> tableRowsToDelete;
+    private List<String> tableRowsToDeleteStudy2;
     private Assessment assessment;
 
     @BeforeClass
@@ -358,6 +384,7 @@ public class Exporter3Test {
         subscriptionArnList = new ArrayList<>();
 
         tableRowsToDelete = new ArrayList<>();
+        tableRowsToDeleteStudy2 = new ArrayList<>();
     }
 
     @AfterMethod
@@ -372,6 +399,10 @@ public class Exporter3Test {
             admin.getClient(UploadsApi.class).deleteUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_ID,
                     tableRowRecordId).execute();
         }
+        for (String tableRowRecordId : tableRowsToDeleteStudy2) {
+            admin.getClient(UploadsApi.class).deleteUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_2_ID,
+                    tableRowRecordId).execute();
+        }
 
         // Delete participant version and user.
         if (user != null) {
@@ -382,6 +413,12 @@ public class Exporter3Test {
         if (schedule != null) {
             SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
             schedulesApi.deleteSchedule(schedule.getGuid()).execute();
+            schedule = null;
+        }
+        if (scheduleStudy2 != null) {
+            SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+            schedulesApi.deleteSchedule(scheduleStudy2.getGuid()).execute();
+            scheduleStudy2 = null;
         }
         if (assessment != null) {
             AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
@@ -786,7 +823,7 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        String recordId = testUpload(zipFileContent, zipFileContent, false, userMetadata, expectedMetadata);
+        String recordId = testUpload(zipFileContent, zipFileContent, false, userMetadata, expectedMetadata, STUDY_ID, ex3ConfigForStudy);
         tableRowsToDelete.add(recordId);
 
         // Check that UploadTableRow got created
@@ -821,7 +858,7 @@ public class Exporter3Test {
         assertEquals(tableRowDataMap.get("simpleQ1"), "test text");
 
         // Now request the actual CSV file and verify it.
-        Map<String, File> csvResultFilesByName = runCsvWorker();
+        Map<String, File> csvResultFilesByName = runCsvWorker(STUDY_ID);
         assertEquals(csvResultFilesByName.size(), 1);
 
         // This upload is in study1, so there might be rows from old tests or other tests. Find the filename that
@@ -846,6 +883,160 @@ public class Exporter3Test {
         });
         UploadTableTest.assertCsvFile(csvFile, SURVEY_UPLOAD_TABLE_COLUMNS, expectedRowsMap);
     }
+
+    @Test
+    public void uploadArcResultWithScheduleContext() throws Exception {
+        TestUser admin = TestUserHelper.getSignedInAdmin();
+        AssessmentsApi assessmentsApi = admin.getClient(AssessmentsApi.class);
+        ParticipantsApi participantsApi = admin.getClient(ParticipantsApi.class);
+        SchedulesV2Api schedulesApi = admin.getClient(SchedulesV2Api.class);
+        StudiesApi studiesApi = admin.getClient(StudiesApi.class);
+        UploadsApi uploadsApi = admin.getClient(UploadsApi.class);
+
+        // Get the user's healthcode.
+        String userId = user.getUserId();
+        StudyParticipant participant = participantsApi.getParticipantById(userId, false).execute().body();
+        String healthCode = participant.getHealthCode();
+
+        // Give participant  data group.
+        participant.dataGroups(ImmutableList.of(DATA_GROUP_SDK_INT_1));
+        participantsApi.updateParticipant(userId, participant).execute();
+
+        // Make Open Bridge survey assessment.
+        String assessmentId = "symbol_test";
+
+        // Get ARC symbol test
+        Assessment assessment = assessmentsApi.getAssessmentById(assessmentId, 1L).execute().body();
+
+        // To run locally you will need to create a symbol_test assessment
+        //if (assessment == null) {
+        //    assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
+        //            .identifier(assessmentId).frameworkIdentifier(FRAMEWORK_IDENTIFIER_ARC_ASSESSMENT)
+        //            .phase(Assessment.PhaseEnum.DRAFT);
+        //    assessment = assessmentsApi.createAssessment(assessment).execute().body();
+        //}
+
+        scheduleStudy2 = new Schedule2();
+        scheduleStudy2.setName("Test Schedule [Exporter3Test]");
+        scheduleStudy2.setDuration("P1W");
+
+        Session session = new Session();
+        session.setName("Once time task");
+        session.addStartEventIdsItem("enrollment");
+        session.setPerformanceOrder(SEQUENTIAL);
+
+        AssessmentReference2 ref = new AssessmentReference2()
+                .guid(assessment.getGuid()).appId(TEST_APP_ID)
+                .title(assessmentId)
+                .identifier(assessment.getIdentifier())
+                .revision(assessment.getRevision().intValue());
+        session.addAssessmentsItem(ref);
+        session.addTimeWindowsItem(new TimeWindow().startTime("00:00").expiration("P1W"));
+        scheduleStudy2.addSessionsItem(session);
+
+        scheduleStudy2 = schedulesApi.saveScheduleForStudy(STUDY_2_ID, scheduleStudy2).execute().body();
+
+        Timeline timeline = schedulesApi.getTimelineForStudy(STUDY_2_ID).execute().body();
+
+        // Get study.
+        Study study = studiesApi.getStudy(STUDY_2_ID).execute().body();
+
+        // Make upload. This is a zip file with two files in it, metadata.json and assessmentResult.json.
+        byte[] zipFileContent = zip(ARC_UPLOAD_CONTENT_BY_FILENAME);
+
+        File tmpZipFile = File.createTempFile("test", ".zip");
+        Files.write(zipFileContent, tmpZipFile);
+        LOG.info("Creating temp file: " + tmpZipFile.getAbsolutePath());
+
+        // Could also use the session instanceGuid, it doesn't matter.
+        String instanceGuid = timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid();
+
+        Map<String,String> userMetadata = new HashMap<>();
+        userMetadata.put("instanceGuid", instanceGuid);
+
+        Map<String,String> expectedMetadata = new HashMap<>();
+        expectedMetadata.put("instanceGuid", instanceGuid);
+        expectedMetadata.put("assessmentGuid", assessment.getGuid());
+        expectedMetadata.put("assessmentId", assessment.getIdentifier());
+        expectedMetadata.put("assessmentRevision", assessment.getRevision().toString());
+        expectedMetadata.put("assessmentInstanceGuid",
+                timeline.getSchedule().get(0).getAssessments().get(0).getInstanceGuid());
+        expectedMetadata.put("sessionInstanceGuid", timeline.getSchedule().get(0).getInstanceGuid());
+        String sessionRefId = timeline.getSchedule().get(0).getRefGuid();
+        String sessionName = timeline.getSessions().stream().filter(s -> s.getGuid().equals(sessionRefId)).findFirst().get().getLabel();
+        expectedMetadata.put("sessionGuid", timeline.getSchedule().get(0).getRefGuid());
+        expectedMetadata.put("sessionName", sessionName);
+        expectedMetadata.put("sessionInstanceStartDay", timeline.getSchedule().get(0).getStartDay().toString());
+        expectedMetadata.put("sessionInstanceEndDay", timeline.getSchedule().get(0).getEndDay().toString());
+        expectedMetadata.put("sessionStartEventId", "enrollment");
+        expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
+        expectedMetadata.put("scheduleGuid", scheduleStudy2.getGuid());
+        expectedMetadata.put("scheduleModifiedOn", scheduleStudy2.getModifiedOn().toString());
+        String recordId = testUpload(zipFileContent, zipFileContent, false, userMetadata, expectedMetadata, STUDY_2_ID, ex3ConfigForStudy2);
+        tableRowsToDeleteStudy2.add(recordId);
+
+        // Check that UploadTableRow got created
+        UploadTableRow tableRow = uploadsApi.getUploadTableRowForSuperadmin(TEST_APP_ID, STUDY_2_ID, recordId).execute().body();
+        assertNotNull(tableRow);
+        assertEquals(tableRow.getAppId(), TEST_APP_ID);
+        assertEquals(tableRow.getStudyId(), STUDY_2_ID);
+        assertEquals(tableRow.getRecordId(), recordId);
+        assertEquals(tableRow.getAssessmentGuid(), assessment.getGuid());
+        assertNotNull(tableRow.getCreatedOn());
+        assertEquals(tableRow.getHealthCode(), healthCode);
+        assertEquals(tableRow.getParticipantVersion().intValue(), 1);
+        assertTrue(tableRow.isTestData());
+
+        // Table row metadata.
+        Map<String, String> tableRowMetadataMap = tableRow.getMetadata();
+        assertTrue(tableRowMetadataMap.get("clientInfo").contains(APP_NAME_FOR_USER));
+        assertTrue(tableRowMetadataMap.get("userAgent").startsWith(APP_NAME_FOR_USER));
+        assertEquals(tableRowMetadataMap.get("sessionGuid"), expectedMetadata.get("sessionGuid"));
+        assertEquals(tableRowMetadataMap.get("sessionStartEventId"), expectedMetadata.get("sessionStartEventId"));
+        assertEquals(tableRowMetadataMap.get("sessionName"), expectedMetadata.get("sessionName"));
+        assertEquals(tableRowMetadataMap.get("dataGroups"), DATA_GROUP_SDK_INT_1 + "," +
+                DATA_GROUP_TEST_USER);
+        //assertEquals(tableRowMetadataMap.get("externalId"), EXTERNAL_ID);
+        assertEquals(tableRowMetadataMap.get("deviceInfo"), DEVICE_INFO);
+        assertEquals(tableRowMetadataMap.get("startDate"), START_DATE_STR);
+        assertEquals(tableRowMetadataMap.get("endDate"), END_DATE_STR);
+
+        // Table row data.
+        Map<String, String> tableRowDataMap = tableRow.getData();
+        LOG.info(tableRowDataMap.toString());
+        assertEquals(tableRowDataMap.get("symbolsAccuracy"), "1.0");
+        assertTrue(tableRowDataMap.get("symbolsMedian").startsWith("2.1948129"));
+        assertTrue(tableRowDataMap.get("symbolsMean").startsWith("2.7468290"));
+        assertTrue(tableRowDataMap.get("symbolsSD").startsWith("1.6701477"));
+        assertTrue(tableRowDataMap.get("symbolsCoV").startsWith("0.6080275"));
+
+        // Now request the actual CSV file and verify it.
+        Map<String, File> csvResultFilesByName = runCsvWorker(STUDY_2_ID);
+        assertEquals(csvResultFilesByName.size(), 1);
+
+        // This upload is in study1, so there might be rows from old tests or other tests. Find the filename that
+        // contains our assessment GUID.
+        File csvFile = null;
+        for (File oneCsvFile : csvResultFilesByName.values()) {
+            if (oneCsvFile.getName().contains(assessment.getGuid())) {
+                csvFile = oneCsvFile;
+                break;
+            }
+        }
+        assertNotNull(csvFile, "Could not find CSV file for assessment " + assessment.getGuid());
+
+        // Since this assessment was freshly created for this test, we know there's only one row.
+        Map<String, String[]> expectedRowsMap = new HashMap<>();
+        expectedRowsMap.put(recordId, new String[] { recordId, STUDY_2_ID, study.getName(), assessment.getGuid(),
+                assessmentId, "1", assessmentId, tableRow.getCreatedOn().toString(), "true", healthCode, "1",
+                tableRowMetadataMap.get("clientInfo"), DATA_GROUP_SDK_INT_1 + "," + DATA_GROUP_TEST_USER, DEVICE_INFO,
+                END_DATE_STR, tableRowMetadataMap.get("sessionGuid"),
+                tableRowMetadataMap.get("sessionName"), tableRowMetadataMap.get("sessionStartEventId"), START_DATE_STR,
+                tableRowMetadataMap.get("userAgent"), "1.0", "0.6080275666699172", "2.746829003095627", "2.1948129534721375", "1.6701477548105885"
+        });
+        UploadTableTest.assertCsvFile(csvFile, ARC_UPLOAD_TABLE_COLUMNS, expectedRowsMap);
+    }
+
 
     @Test
     public void uploadWithCsvWithUnrecognizedAssessment() throws Exception {
@@ -913,7 +1104,7 @@ public class Exporter3Test {
         expectedMetadata.put("timeWindowGuid", timeline.getSchedule().get(0).getTimeWindowGuid());
         expectedMetadata.put("scheduleGuid", schedule.getGuid());
         expectedMetadata.put("scheduleModifiedOn", schedule.getModifiedOn().toString());
-        String recordId = testUpload(UPLOAD_CONTENT, UPLOAD_CONTENT, false, userMetadata, expectedMetadata);
+        String recordId = testUpload(UPLOAD_CONTENT, UPLOAD_CONTENT, false, userMetadata, expectedMetadata, STUDY_ID, ex3ConfigForStudy);
         tableRowsToDelete.add(recordId);
 
         // Check that UploadTableRow got created
@@ -1300,11 +1491,11 @@ public class Exporter3Test {
     private void testUpload(byte[] content, byte[] expectedContent, boolean encrypted) throws Exception {
         testUpload(content, expectedContent, encrypted,
                 ImmutableMap.of(CUSTOM_METADATA_KEY, CUSTOM_METADATA_VALUE),
-                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE));
+                ImmutableMap.of(CUSTOM_METADATA_KEY_SANITIZED, CUSTOM_METADATA_VALUE), STUDY_ID, ex3ConfigForStudy);
     }
     
     private String testUpload(byte[] content, byte[] expectedContent, boolean encrypted,
-            Map<String,String> userMetadata, Map<String,String> expectedMetadata) throws Exception {
+            Map<String,String> userMetadata, Map<String,String> expectedMetadata, String studyId, Exporter3Configuration ex3studyConfig) throws Exception {
         // Participants created by TestUserHelper (UserAdminService) are set to no_sharing by default. Enable sharing
         // so that the test can succeed.
         ParticipantsApi participantsApi = user.getClient(ParticipantsApi.class);
@@ -1322,7 +1513,7 @@ public class Exporter3Test {
                 exporterSubscriptionRequest).execute().body();
         subscriptionArnList.add(exporterSubscriptionResult.getSubscriptionArn());
 
-        exporterSubscriptionResult = adminsApi.subscribeToExportNotificationsForStudy(STUDY_ID,
+        exporterSubscriptionResult = adminsApi.subscribeToExportNotificationsForStudy(studyId,
                 exporterSubscriptionRequest).execute().body();
         subscriptionArnList.add(exporterSubscriptionResult.getSubscriptionArn());
 
@@ -1333,9 +1524,9 @@ public class Exporter3Test {
 
         // Verify Synapse and S3.
         ExportedRecordInfo appRecordInfo = verifyUpload(ex3Config, uploadId, filename,
-                false, expectedMetadata, expectedContent);
-        ExportedRecordInfo studyRecordInfo = verifyUpload(ex3ConfigForStudy, uploadId, filename,
-                true, expectedMetadata, expectedContent);
+                false, studyId, expectedMetadata, expectedContent);
+        ExportedRecordInfo studyRecordInfo = verifyUpload(ex3studyConfig, uploadId, filename,
+                true, studyId, expectedMetadata, expectedContent);
 
         // Verify the record in Bridge.
         ForConsentedUsersApi usersApi = user.getClient(ForConsentedUsersApi.class);
@@ -1344,7 +1535,7 @@ public class Exporter3Test {
         DateTime oneHourAgo = DateTime.now().minusHours(1);
         assertTrue(record.getExportedOn().isAfter(oneHourAgo));
         assertRecordInfoEquals(appRecordInfo, record.getExportedRecord());
-        assertRecordInfoEquals(studyRecordInfo, record.getExportedStudyRecords().get(STUDY_ID));
+        assertRecordInfoEquals(studyRecordInfo, record.getExportedStudyRecords().get(studyId));
 
         // Verify the presigned download url for a health record is generated and contains the data expected.
         String url = record.getDownloadUrl();
@@ -1396,22 +1587,22 @@ public class Exporter3Test {
                 assertEquals(exportNotificationNode.get("record").get("s3Key").textValue(),
                         appRecordInfo.getS3Key());
 
-                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("parentProjectId").textValue(),
+                assertEquals(exportNotificationNode.get("studyRecords").get(studyId).get("parentProjectId").textValue(),
                         studyRecordInfo.getParentProjectId());
-                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("rawFolderId").textValue(),
+                assertEquals(exportNotificationNode.get("studyRecords").get(studyId).get("rawFolderId").textValue(),
                         studyRecordInfo.getRawFolderId());
-                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("fileEntityId").textValue(),
+                assertEquals(exportNotificationNode.get("studyRecords").get(studyId).get("fileEntityId").textValue(),
                         studyRecordInfo.getFileEntityId());
-                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("s3Bucket").textValue(),
+                assertEquals(exportNotificationNode.get("studyRecords").get(studyId).get("s3Bucket").textValue(),
                         studyRecordInfo.getS3Bucket());
-                assertEquals(exportNotificationNode.get("studyRecords").get(STUDY_ID).get("s3Key").textValue(),
+                assertEquals(exportNotificationNode.get("studyRecords").get(studyId).get("s3Key").textValue(),
                         studyRecordInfo.getS3Key());
 
                 // Don't check study2. Most studies export to both studies, but a few only export to study1.
             } else if ("ExportToStudyNotification".equals(exportNotificationNode.get("type").textValue())) {
                 foundStudyNotification = true;
                 assertEquals(exportNotificationNode.get("appId").textValue(), TEST_APP_ID);
-                assertEquals(exportNotificationNode.get("studyId").textValue(), STUDY_ID);
+                assertEquals(exportNotificationNode.get("studyId").textValue(), studyId);
                 assertEquals(exportNotificationNode.get("recordId").textValue(), uploadId);
 
                 assertEquals(exportNotificationNode.get("parentProjectId").textValue(),
@@ -1441,7 +1632,7 @@ public class Exporter3Test {
         assertEquals(record1.getS3Key(), record2.getS3Key());
     }
 
-    private ExportedRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy,
+    private ExportedRecordInfo verifyUpload(Exporter3Configuration ex3Config, String uploadId, String filename, boolean isForStudy, String studyId,
             Map<String,String> expectedMetadata, byte[] expectedContent) throws Exception {
         // Verify Synapse file entity and annotations.
         String rawFolderId = ex3Config.getRawDataFolderId();
@@ -1480,7 +1671,7 @@ public class Exporter3Test {
 
         String expectedS3Key;
         if (isForStudy) {
-            expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + STUDY_ID + '/' + todaysDateString + '/' +
+            expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + studyId + '/' + todaysDateString + '/' +
                     exportedFilename;
         } else {
             expectedS3Key = IntegTestUtils.TEST_APP_ID + '/' + todaysDateString + '/' + exportedFilename;
@@ -1629,14 +1820,14 @@ public class Exporter3Test {
         assertTrue(uploadedOn.isAfter(oneHourAgo));
     }
 
-    private static Map<String, File> runCsvWorker() throws Exception {
+    private static Map<String, File> runCsvWorker(String studyId) throws Exception {
         // We need to know the previous finish time so we can determine when the worker is finished.
         long previousFinishTime = TestUtils.getWorkerLastFinishedTime(ddbWorkerLogTable,
                 UploadTableTest.WORKER_ID_CSV_WORKER);
 
         // Create request.
         UploadsApi researcherUploadsApi = researcher.getClient(UploadsApi.class);
-        String jobGuid = researcherUploadsApi.requestUploadTableForStudy(STUDY_ID).execute().body().getJobGuid();
+        String jobGuid = researcherUploadsApi.requestUploadTableForStudy(studyId).execute().body().getJobGuid();
 
         // Wait until the worker is finished.
         // Note that the server has logic to dedupe CSV requests every 5 minutes. If you run this test more than once
@@ -1645,7 +1836,7 @@ public class Exporter3Test {
         TestUtils.pollWorkerLog(ddbWorkerLogTable, UploadTableTest.WORKER_ID_CSV_WORKER, previousFinishTime);
 
         // Get the S3 URL from Bridge Server.
-        UploadTableJobResult jobResult = researcherUploadsApi.getUploadTableJobResult(STUDY_ID, jobGuid).execute()
+        UploadTableJobResult jobResult = researcherUploadsApi.getUploadTableJobResult(studyId, jobGuid).execute()
                 .body();
         assertEquals(jobResult.getStatus(), UploadTableJobStatus.SUCCEEDED);
         assertNotNull(jobResult.getUrl());
