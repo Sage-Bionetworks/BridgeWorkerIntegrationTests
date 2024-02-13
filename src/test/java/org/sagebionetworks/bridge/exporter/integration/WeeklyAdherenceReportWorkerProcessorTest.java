@@ -13,7 +13,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.apache.commons.lang3.RandomStringUtils;
-import org.joda.time.DateTime;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -154,20 +153,36 @@ public class WeeklyAdherenceReportWorkerProcessorTest {
     }
 
     private void executeWorker() throws InterruptedException, JsonProcessingException {
-        // Conveniently, we're going to run this in the current hour
-        DateTime time = DateTime.now();
-        int hourOfDay = time.getHourOfDay();
-        String zoneId = time.getZone().getID();
-
         String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{"
-                + "\"selectedStudies\":{\"api\":[\"study1\"]}, \"defaultZoneId\":\""+zoneId+"\","
-                + "\"reportingHours\":["+hourOfDay+"]}}";
+                + "\"selectedStudies\":{\"api\":[\"study1\"]}}}";
         ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
 
         sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
 
         // Wait. Let the worker do its thing.
         Thread.sleep(8000L);
+    }
+
+    @Test
+    public void allApps() throws Exception {
+        // This test exercises the code path where we don't have a list of apps, so we iterate through all apps.
+
+        // Ensure adherence reports are enabled for app.
+        App app = appsApi.getUsersApp().execute().body();
+        app.setAdherenceReportEnabled(true);
+        appsApi.updateUsersApp(app).execute();
+
+        // Execute worker.
+        String requestText = "{\"service\":\"WeeklyAdherenceReportWorker\", \"body\":{}}";
+        ObjectNode requestNode = (ObjectNode) DefaultObjectMapper.INSTANCE.readTree(requestText);
+
+        sqsHelper.sendMessageAsJson(workerSqsUrl, requestNode, 0);
+
+        // Wait. Let the worker do its thing.
+        Thread.sleep(8000L);
+
+        // This should return our user...
+        assertTrue( reportCreatedForUser() );
     }
 
     private boolean reportCreatedForUser() throws Exception {
