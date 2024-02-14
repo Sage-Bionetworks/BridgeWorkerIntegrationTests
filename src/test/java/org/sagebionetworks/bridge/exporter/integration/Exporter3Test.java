@@ -908,13 +908,13 @@ public class Exporter3Test {
         // Get ARC symbol test
         Assessment assessment = assessmentsApi.getAssessmentById(assessmentId, 1L).execute().body();
 
-        // To run locally you will need to create a symbol_test assessment
-        //if (assessment == null) {
-        //    assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
-        //            .identifier(assessmentId).frameworkIdentifier(FRAMEWORK_IDENTIFIER_ARC_ASSESSMENT)
-        //            .phase(Assessment.PhaseEnum.DRAFT);
-        //    assessment = assessmentsApi.createAssessment(assessment).execute().body();
-        //}
+        // If not running against production we may need to create a symbol_test assessment
+        if (assessment == null) {
+            assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
+                    .identifier(assessmentId).frameworkIdentifier(FRAMEWORK_IDENTIFIER_ARC_ASSESSMENT)
+                    .phase(Assessment.PhaseEnum.DRAFT);
+            assessment = assessmentsApi.createAssessment(assessment).execute().body();
+        }
 
         scheduleStudy2 = new Schedule2();
         scheduleStudy2.setName("Test Schedule [Exporter3Test]");
