@@ -900,7 +900,7 @@ public class Exporter3Test {
         String healthCode = participant.getHealthCode();
 
         // This test looks at study2 instead of study1, so we need a bit of extra time before the participant version
-        // is available in study2. Since the participant version doesn't get created until we change the sharing
+        // is available in study2. The participant version doesn't get created until we change the sharing
         // status from no_sharing to all_qualified_researchers, so we'll do this now and insert a wait to give us time
         // for this to happen.
         participant.dataGroups(ImmutableList.of(DATA_GROUP_SDK_INT_1));
