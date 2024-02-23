@@ -89,6 +89,7 @@ import org.sagebionetworks.bridge.rest.api.ParticipantsApi;
 import org.sagebionetworks.bridge.rest.api.SchedulesV2Api;
 import org.sagebionetworks.bridge.rest.api.StudiesApi;
 import org.sagebionetworks.bridge.rest.api.UploadsApi;
+import org.sagebionetworks.bridge.rest.exceptions.EntityNotFoundException;
 import org.sagebionetworks.bridge.rest.model.App;
 import org.sagebionetworks.bridge.rest.model.Assessment;
 import org.sagebionetworks.bridge.rest.model.AssessmentConfig;
@@ -898,18 +899,25 @@ public class Exporter3Test {
         StudyParticipant participant = participantsApi.getParticipantById(userId, false).execute().body();
         String healthCode = participant.getHealthCode();
 
-        // Give participant  data group.
+        // This test looks at study2 instead of study1, so we need a bit of extra time before the participant version
+        // is available in study2. Since the participant version doesn't get created until we change the sharing
+        // status from no_sharing to all_qualified_researchers, so we'll do this now and insert a wait to give us time
+        // for this to happen.
         participant.dataGroups(ImmutableList.of(DATA_GROUP_SDK_INT_1));
+        participant.setSharingScope(SharingScope.ALL_QUALIFIED_RESEARCHERS);
         participantsApi.updateParticipant(userId, participant).execute();
+
+        Thread.sleep(30000);
 
         // Make Open Bridge survey assessment.
         String assessmentId = "symbol_test";
 
         // Get ARC symbol test
-        Assessment assessment = assessmentsApi.getAssessmentById(assessmentId, 1L).execute().body();
-
-        // If not running against production we may need to create a symbol_test assessment
-        if (assessment == null) {
+        Assessment assessment;
+        try {
+            assessment = assessmentsApi.getAssessmentById(assessmentId, 1L).execute().body();
+        } catch (EntityNotFoundException ex) {
+            // If not running against production we may need to create a symbol_test assessment
             assessment = new Assessment().title(assessmentId).osName("Universal").ownerId("sage-bionetworks")
                     .identifier(assessmentId).frameworkIdentifier(FRAMEWORK_IDENTIFIER_ARC_ASSESSMENT)
                     .phase(Assessment.PhaseEnum.DRAFT);
